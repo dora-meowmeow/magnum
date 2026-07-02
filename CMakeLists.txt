@@ -295,15 +295,15 @@ option(MAGNUM_WITH_EGLCONTEXT "Build EglContext library" OFF)
 if(CORRADE_TARGET_ANDROID)
     option(MAGNUM_WITH_ANDROIDAPPLICATION "Build AndroidApplication library" OFF)
 
-# Emscripten-specific application libraries
+    # Emscripten-specific application libraries
 elseif(CORRADE_TARGET_EMSCRIPTEN)
     option(MAGNUM_WITH_EMSCRIPTENAPPLICATION "Build EmscriptenApplication library" OFF)
 
-# iOS-specific application libraries
+    # iOS-specific application libraries
 elseif(CORRADE_TARGET_IOS)
     option(MAGNUM_WITH_WINDOWLESSIOSAPPLICATION "Build WindowlessIosApplication library" OFF)
 
-# macOS-specific application libraries
+    # macOS-specific application libraries
 elseif(CORRADE_TARGET_APPLE AND NOT MAGNUM_TARGET_EGL)
     # WindowlessCglApplication implied by the CLI tools unless targeting EGL
     if(NOT MAGNUM_TARGET_EGL)
@@ -315,7 +315,7 @@ elseif(CORRADE_TARGET_APPLE AND NOT MAGNUM_TARGET_EGL)
     endif()
     option(MAGNUM_WITH_CGLCONTEXT "Build CglContext library" OFF)
 
-# X11 + GLX/EGL-specific application libraries
+    # X11 + GLX/EGL-specific application libraries
 elseif(CORRADE_TARGET_UNIX)
     option(MAGNUM_WITH_GLXAPPLICATION "Build GlxApplication library" OFF)
     # WindowlessGlxApplication implied by the CLI tools unless targeting EGL
@@ -329,7 +329,7 @@ elseif(CORRADE_TARGET_UNIX)
     option(MAGNUM_WITH_GLXCONTEXT "Build GlxContext library" OFF)
     option(MAGNUM_WITH_XEGLAPPLICATION "Build XEglApplication library" OFF)
 
-# Windows-specific application libraries
+    # Windows-specific application libraries
 elseif(CORRADE_TARGET_WINDOWS)
     # WindowlessWglApplication implied by the CLI tools unless targeting EGL
     if(NOT MAGNUM_TARGET_EGL)
@@ -681,13 +681,14 @@ endif()
 
 # Installation paths
 include(${CORRADE_LIB_SUFFIX_MODULE})
+include(GNUInstallDirs)
 set(MAGNUM_BINARY_INSTALL_DIR bin)
-set(MAGNUM_LIBRARY_INSTALL_DIR lib${LIB_SUFFIX})
+set(MAGNUM_LIBRARY_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}${LIB_SUFFIX})
 set(MAGNUM_DATA_INSTALL_DIR share/magnum)
 set(MAGNUM_CMAKE_MODULE_INSTALL_DIR share/cmake/Magnum)
-set(MAGNUM_INCLUDE_INSTALL_DIR include/Magnum)
-set(MAGNUM_EXTERNAL_INCLUDE_INSTALL_DIR include/MagnumExternal)
-set(MAGNUM_PLUGINS_INCLUDE_INSTALL_DIR include/MagnumPlugins)
+set(MAGNUM_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR}/Magnum)
+set(MAGNUM_EXTERNAL_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR}/MagnumExternal)
+set(MAGNUM_PLUGINS_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR}/MagnumPlugins)
 if(MAGNUM_BUILD_DEPRECATED AND MAGNUM_INCLUDE_INSTALL_PREFIX AND NOT MAGNUM_INCLUDE_INSTALL_PREFIX STREQUAL ".")
     message(DEPRECATION "MAGNUM_INCLUDE_INSTALL_PREFIX is obsolete as its primary use was for old Android NDK versions. Please switch to the NDK r19+ layout instead of using this variable and recreate your build directory to get rid of this warning.")
     set(MAGNUM_DATA_INSTALL_DIR ${MAGNUM_INCLUDE_INSTALL_PREFIX}/${MAGNUM_DATA_INSTALL_DIR})
