@@ -449,6 +449,12 @@ class GlfwApplication {
 
     public:
         /**
+         * @brief Changes glfw window according to the config.
+         */
+        void updateWindowSettings(const Configuration& configuration);
+
+
+        /**
          * @brief Window size
          *
          * Window size to which all input event coordinates can be related.

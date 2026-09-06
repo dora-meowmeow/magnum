@@ -35,6 +35,7 @@
 #include <Corrade/Utility/Arguments.h>
 #include <Corrade/Utility/Unicode.h>
 #include <Corrade/Utility/System.h>
+#include <GLFW/glfw3.h>
 
 #include "Magnum/ImageView.h"
 #include "Magnum/PixelFormat.h"
@@ -801,6 +802,40 @@ Containers::Optional<UnsignedInt> GlfwApplication::keyToScanCode(const Key key) 
     return UnsignedInt(scancode);
 }
 #endif
+
+void GlfwApplication::updateWindowSettings(const Configuration& configuration){
+    CORRADE_ASSERT(_window, "Platform::GlfwApplication::updateWindowSettings(): no window opened", );
+
+    /*
+    _configurationDpiScalingPolicy = configuration.dpiScalingPolicy();
+    _configurationDpiScaling = configuration.dpiScaling();
+    _dpiScaling = dpiScalingInternal(_configurationDpiScalingPolicy, _configurationDpiScaling);
+    */
+
+    const Vector2i dpiSize = configuration.size() * _dpiScaling;
+    const int platform = glfwGetPlatform();
+    GLFWmonitor* monitor = nullptr;
+    if (configuration.windowFlags() >= Configuration::WindowFlag::Fullscreen) {
+        monitor = glfwGetPrimaryMonitor();
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        glfwSetWindowMonitor(_window, monitor, 0, 0, dpiSize.x(), dpiSize.y(),mode->refreshRate);
+        glfwSetWindowAttrib(_window, GLFW_AUTO_ICONIFY, configuration.windowFlags() >= Configuration::WindowFlag::AutoIconify);
+    } else {
+        glfwSetWindowSize(_window, dpiSize.x(), dpiSize.y());
+        const Configuration::WindowFlags& flags = configuration.windowFlags();
+        glfwSetWindowAttrib(_window,GLFW_DECORATED, !(flags >= Configuration::WindowFlag::Borderless));
+        glfwSetWindowAttrib(_window,GLFW_RESIZABLE, flags >= Configuration::WindowFlag::Resizable);
+        glfwSetWindowAttrib(_window,GLFW_VISIBLE, !(flags >= Configuration::WindowFlag::Hidden));
+        glfwSetWindowAttrib(_window,GLFW_MAXIMIZED, flags >= Configuration::WindowFlag::Maximized);
+
+        // Wayland does not support floating
+        if (platform != GLFW_PLATFORM_WAYLAND)
+            glfwSetWindowAttrib(_window,GLFW_FLOATING, flags >= Configuration::WindowFlag::AlwaysOnTop);
+    }
+    glfwSetWindowAttrib(_window,GLFW_FOCUSED, configuration.windowFlags() >= Configuration::WindowFlag::Focused);
+    glfwSetWindowTitle(_window, Containers::String::nullTerminatedView(configuration.title()).data());
+}
+
 
 Vector2i GlfwApplication::windowSize() const {
     CORRADE_ASSERT(_window, "Platform::GlfwApplication::windowSize(): no window opened", {});
