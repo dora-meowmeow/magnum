@@ -814,14 +814,14 @@ void GlfwApplication::updateWindowSettings(const Configuration& configuration){
 
     const Vector2i dpiSize = configuration.size() * _dpiScaling;
     const int platform = glfwGetPlatform();
-    GLFWmonitor* monitor = nullptr;
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
     if (configuration.windowFlags() >= Configuration::WindowFlag::Fullscreen) {
-        monitor = glfwGetPrimaryMonitor();
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
         glfwSetWindowMonitor(_window, monitor, 0, 0, dpiSize.x(), dpiSize.y(),mode->refreshRate);
         glfwSetWindowAttrib(_window, GLFW_AUTO_ICONIFY, configuration.windowFlags() >= Configuration::WindowFlag::AutoIconify);
     } else {
-        glfwSetWindowSize(_window, dpiSize.x(), dpiSize.y());
+        glfwSetWindowMonitor(_window, nullptr, 0, 0, dpiSize.x(), dpiSize.y(),mode->refreshRate);
+
         const Configuration::WindowFlags& flags = configuration.windowFlags();
         glfwSetWindowAttrib(_window,GLFW_DECORATED, !(flags >= Configuration::WindowFlag::Borderless));
         glfwSetWindowAttrib(_window,GLFW_RESIZABLE, flags >= Configuration::WindowFlag::Resizable);
