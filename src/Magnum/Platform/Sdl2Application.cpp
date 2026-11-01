@@ -116,9 +116,6 @@ enum class Sdl2Application::Flag: UnsignedByte {
     TextInputActive = 1 << 5,
     Resizable = 1 << 6,
     #endif
-    #ifdef CORRADE_TARGET_APPLE
-    HiDpiWarningPrinted = 1 << 7
-    #endif
 };
 
 Containers::StringView Sdl2Application::keyName(const Key key) {
@@ -251,24 +248,57 @@ Sdl2Application::Sdl2Application(const Arguments& arguments, NoCreateT):
     if(args.value("log") == "verbose")
         _verboseLog = true;
     const Containers::StringView dpiScaling = args.value<Containers::StringView>("dpi-scaling");
+    #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE) && !defined(CORRADE_TARGET_ANDROID)
+    const bool isWayland = SDL_GetCurrentVideoDriver() == "wayland"_s;
+    #endif
     if(dpiScaling == "default"_s)
+        /* Here we don't need to resolve to Virtual or Framebuffer on Wayland
+           as the value will get overriden by the configuration-supplied
+           value */
         _commandLineDpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Default;
-    #ifdef CORRADE_TARGET_APPLE
-    else if(dpiScaling == "framebuffer"_s)
+    #if defined(CORRADE_TARGET_APPLE) || (SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_ANDROID))
+    else if(dpiScaling == "framebuffer"_s
+        #ifndef CORRADE_TARGET_APPLE
+        /* On Wayland with sdl2 (not sdl2-compat layered over SDL3, somehow)
+           framebuffer scaling is the only option. If not running on Wayland,
+           don't recognize --magnum-dpi-scaling framebuffer at all. */
+        && isWayland
+        #endif
+    )
         _commandLineDpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Framebuffer;
     #endif
     #ifndef CORRADE_TARGET_APPLE
+    /* If running with sdl2 (not sdl2-compat layered over SDL3) on a Wayland
+       backend where framebuffer scaling is the only option, these two aren't
+       allowed there */
     #if !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
-    else if(dpiScaling == "virtual"_s)
+    else if(dpiScaling == "virtual"_s
+        #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_ANDROID)
+        && !isWayland
+        #endif
+    )
         _commandLineDpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Virtual;
     #endif
-    else if(dpiScaling == "physical"_s)
+    else if(dpiScaling == "physical"_s
+        #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_ANDROID)
+        && !isWayland
+        #endif
+    )
         _commandLineDpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Physical;
     #endif
-    else if(dpiScaling.containsAny(" \t\n"_s))
-        _commandLineDpiScaling = args.value<Vector2>("dpi-scaling");
-    else
-        _commandLineDpiScaling = Vector2{args.value<Float>("dpi-scaling")};
+    else {
+        if(dpiScaling.containsAny(" \t\n"_s))
+            _commandLineDpiScaling = args.value<Vector2>("dpi-scaling");
+        else
+            _commandLineDpiScaling = Vector2{args.value<Float>("dpi-scaling")};
+        /* If e.g. `virtual` is passed on macOS, it falls back to parsing it as
+           a number, resulting in zero, which then leads to nasty assertions or
+           other misbehavior. Catch that early and exit. */
+        if(Math::equal(_commandLineDpiScaling.product(), 0.0f)) {
+            Error{} << "Platform::Sdl2Application: invalid DPI scaling" << dpiScaling;
+            std::exit(2);
+        }
+    }
 }
 
 void Sdl2Application::create() {
@@ -288,26 +318,22 @@ void Sdl2Application::create(const Configuration& configuration, const GLConfigu
 #endif
 
 Vector2 Sdl2Application::dpiScaling(const Configuration& configuration) {
-    /* Print a helpful warning in case some extra steps are needed for HiDPI
-       support */
-    #ifdef CORRADE_TARGET_APPLE
-    if(!Implementation::isAppleBundleHiDpiEnabled() && !(_flags & Flag::HiDpiWarningPrinted)) {
-        Warning{} << "Platform::Sdl2Application: warning: the executable is not a HiDPI-enabled app bundle";
-        _flags |= Flag::HiDpiWarningPrinted;
-    }
-    #elif defined(CORRADE_TARGET_WINDOWS)
-    /* Handled in dpiScalingInternal(), warning printed only when using virtual
-       DPI scaling (and thus not setting the HiDpiWarningPrinted flag) */
-    #endif
-
     return dpiScalingInternal(configuration.dpiScalingPolicy(), configuration.dpiScaling());
 }
 
 Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScalingPolicy configurationDpiScalingPolicy, const Vector2& configurationDpiScaling, const bool silentLog) const {
-    #if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE) && !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
     std::ostream* const output = silentLog ? nullptr : Debug::output();
-    #endif
     std::ostream* const verbose = _verboseLog && !silentLog ? Debug::output() : nullptr;
+
+    /* Print a helpful warning in case some extra steps are needed for HiDPI
+       support. Do that even before parsing the command-line- or
+       configuration-supplied values to let the user know those might not
+       behave as expected. */
+    #ifdef CORRADE_TARGET_APPLE
+    if(!Implementation::isAppleBundleHiDpiEnabled()) {
+        Warning{output} << "Platform::Sdl2Application: warning: the executable is not a HiDPI-enabled app bundle";
+    }
+    #endif
 
     /* Use values from the configuration only if not overridden on command line
        to something non-default. In any case explicit scaling has a precedence
@@ -315,12 +341,20 @@ Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScaling
     #ifndef CORRADE_TARGET_APPLE
     Implementation::Sdl2DpiScalingPolicy dpiScalingPolicy{};
     #endif
+    #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE) && !defined(CORRADE_TARGET_ANDROID)
+    const bool isWayland = SDL_GetCurrentVideoDriver() == "wayland"_s;
+    #endif
     if(!_commandLineDpiScaling.isZero()) {
         Debug{verbose} << "Platform::Sdl2Application: user-defined DPI scaling" << _commandLineDpiScaling;
         return _commandLineDpiScaling;
     } else if(_commandLineDpiScalingPolicy != Implementation::Sdl2DpiScalingPolicy::Default) {
         #ifndef CORRADE_TARGET_APPLE
+        /* On non-Apple Unix the constructor guaranteed this to be Framebuffer
+           if on Wayland */
         dpiScalingPolicy = _commandLineDpiScalingPolicy;
+        #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE) && !defined(CORRADE_TARGET_ANDROID)
+        CORRADE_INTERNAL_ASSERT(!isWayland || dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Framebuffer);
+        #endif
         #endif
     } else if(!configurationDpiScaling.isZero()) {
         Debug{verbose} << "Platform::Sdl2Application: app-defined DPI scaling" << configurationDpiScaling;
@@ -328,10 +362,51 @@ Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScaling
     } else {
         #ifndef CORRADE_TARGET_APPLE
         dpiScalingPolicy = configurationDpiScalingPolicy;
+        #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE) && !defined(CORRADE_TARGET_ANDROID)
+        if(isWayland) {
+            /* By default, the policy is set to Default (heh), not Framebuffer,
+               don't warn in that case. Compared to --magnum-dpi-scaling this
+               is not a hard error as it's generally too annoing for the app
+               code to check whether X11 or Wayland is used before actually
+               creating the window */
+            if(dpiScalingPolicy != Implementation::Sdl2DpiScalingPolicy::Framebuffer &&
+               dpiScalingPolicy != Implementation::Sdl2DpiScalingPolicy::Default)
+            {
+                CORRADE_INTERNAL_ASSERT(dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Virtual || dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Physical);
+                Warning{output} << "Platform::Sdl2Application:" << (dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Virtual ? "virtual" : "physical") << "DPI scaling not supported on this platform, falling back to framebuffer scaling";
+            }
+            dpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Framebuffer;
+        } else {
+            /* Conversely, if we're not on Wayland, warn if attempting to use
+               framebuffer scaling and fall back to virtual */
+            if(dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Framebuffer) {
+                Warning{output} << "Platform::Sdl2Application: framebuffer DPI scaling not supported on this platform, falling back to virtual scaling";
+                dpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Virtual;
+            }
+            if(dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Default)
+                dpiScalingPolicy = Implementation::Sdl2DpiScalingPolicy::Virtual;
+        }
+        #endif
         #else
         static_cast<void>(configurationDpiScalingPolicy);
         #endif
     }
+
+    /* On Windows SDL_GetDisplayDPI() is querying GetDpiForMonitor() --
+       https://github.com/spurious/SDL-mirror/blob/17af4584cb28cdb3c2feba17e7d989a806007d9f/src/video/windows/SDL_windowsmodes.c#L266
+       and GetDpiForMonitor() returns 96 if the application is DPI unaware. So
+       we instead check for DPI awareness first and if the app is not DPI aware
+       we tell that to the user explicitly and don't even attempt to query the
+       value as neither virtual nor physical scaling would behave as expected.
+       This is done only after parsing the command-line- and
+       configuration-supplied values so a custom value can still be supplied if
+       desired. */
+    #if defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT)
+    if(!Implementation::isWindowsAppDpiAware()) {
+        Warning{output} << "Platform::Sdl2Application: your application is not set as DPI-aware, DPI scaling won't be used";
+        return Vector2{1.0f};
+    }
+    #endif
 
     /* There's no choice on Apple, it's all controlled by the plist file. So
        unless someone specified custom scaling via config or command-line
@@ -339,31 +414,71 @@ Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScaling
     #ifdef CORRADE_TARGET_APPLE
     return Vector2{1.0f};
 
-    /* Otherwise there's a choice between virtual and physical DPI scaling */
+    /* Otherwise there's a choice between virtual and physical DPI scaling, or
+       possibly only framebuffer scaling if we're on Wayland on sdl2 (however
+       not on sdl2-compat layered over SDL3) because everyone is apparently
+       crazy and things for some reason cannot be consistent even in a single
+       version of a single toolkit, ugh */
     #else
-    /* Try to get virtual DPI scaling first, if supported and requested */
+    #if SDL_PATCHLEVEL < 50 && defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE) && !defined(CORRADE_TARGET_ANDROID)
+    if(isWayland) {
+        CORRADE_INTERNAL_ASSERT(dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Framebuffer);
+        Debug{verbose} << "Platform::Sdl2Application: using framebuffer DPI scaling on Wayland";
+        return Vector2{1.0f};
+    }
+    #endif
+
+    /* On non-Wayland Unix and Windows try to get virtual DPI scaling first, if
+       supported and requested */
     #if !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
     if(dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Virtual) {
-        /* Use Xft.dpi on X11, because SDL_GetDisplayDPI() returns the useless
-           physical value on Linux, while the virtual value on Windows. */
-        #ifdef _MAGNUM_PLATFORM_USE_X11
-        const Vector2 dpiScaling{Implementation::x11DpiScaling(output)};
-        if(!dpiScaling.isZero()) {
-            Debug{verbose} << "Platform::Sdl2Application: virtual DPI scaling" << dpiScaling.x();
-            return dpiScaling;
-        }
+        /* On sdl2 (not sdl2-compat layered over SDL3), SDL_GetDisplayDPI()
+           returns the useless physical value both for X11 (or it used to until
+           SDL 2.0.18, after that it started returning some weird imprecise
+           value that is *also* useless) and for Wayland, so if X11 was found
+           at compile time and the session is actually running on X11 we do a
+           manual query of Xft.dpi.
 
-        /* Check for DPI awareness on (non-RT) Windows and then ask for DPI.
-           SDL_GetDisplayDPI() is querying GetDpiForMonitor() --
-           https://github.com/spurious/SDL-mirror/blob/17af4584cb28cdb3c2feba17e7d989a806007d9f/src/video/windows/SDL_windowsmodes.c#L266
-           and GetDpiForMonitor() returns 96 if the application is DPI unaware.
-           So we instead check for DPI awareness first (and tell the user if
-           not), and only if the app is, then we use SDL_GetDisplayDPI(). */
-        #elif defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT)
-        if(!Implementation::isWindowsAppDpiAware()) {
-            Warning{verbose} << "Platform::Sdl2Application: your application is not set as DPI-aware, DPI scaling won't be used";
-            return Vector2{1.0f};
+           On sdl2 if not running on X11 (i.e., most likely running Wayland
+           instead) we don't even attempt to query Xft.dpi as it wouldn't
+           succeed anyway. Users will get the "sorry, not implemented" message
+           below instead. Querying the Wayland property by hand is extremely
+           complicated as it involves generating C headers from XML files,
+           crafting binary data to send over to some socket and implementing an
+           event loop, or having a hard dependency on libwayland or some such,
+           not to mention there is integer scaling, and then a separate
+           fractional scaling protocol that might or might not be supported.
+
+           Meanwhile, on sdl2-compat SDL_GetDisplayDPI() *does* return the
+           correct value for both X11 and Wayland so (1) there's no point in
+           doing a manual Xft.dpi query there, and (2) for my own sanity I
+           ultimately don't have to attempt to query the Wayland property
+           directly, and users should either not use Wayland with sdl2 or
+           switch to sdl2-compat there instead.
+
+           Checking for X11 being used is done with SDL_GetCurrentVideoDriver()
+           and not using XDG_SESSION_TYPE because one can be on Wayland (with
+           XDG_SESSION_TYPE=wayland) but use SDL_VIDEODRIVER=x11 to force use
+           of XWayland. Distinction between sdl2 and sdl2-compat can be done
+           using the patch version, which is at least 50 for sdl2-compat. */
+        #if SDL_PATCHLEVEL < 50 && defined(_MAGNUM_PLATFORM_USE_X11)
+        if(SDL_GetCurrentVideoDriver() == "x11"_s) {
+            const Vector2 dpiScaling{Implementation::x11DpiScaling(output)};
+            if(!dpiScaling.isZero()) {
+                Debug{verbose} << "Platform::Sdl2Application: virtual DPI scaling" << dpiScaling.x();
+                return dpiScaling;
+            }
         }
+        #endif
+
+        /* On Unix with sdl2-compat SDL_GetDisplayDPI() returns correct value
+           for both X11 and Wayland, same for non-RT Windows as long as the app
+           is DPI-aware, which was checked above.
+
+           On Unix with sdl2, if running X11, the Xft.dpi branch above was
+           taken, and if running Wayland, framebuffer scaling was picked
+           above */
+        #if (defined(CORRADE_TARGET_UNIX) && SDL_PATCHLEVEL >= 50) || (defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT))
         Vector2 dpi;
         if(SDL_GetDisplayDPI(0, nullptr, &dpi.x(), &dpi.y()) == 0) {
             const Vector2 dpiScaling{dpi/96.0f};
@@ -373,13 +488,13 @@ Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScaling
 
         /* Otherwise ¯\_(ツ)_/¯ */
         #else
-        Debug{verbose} << "Platform::Sdl2Application: sorry, virtual DPI scaling not implemented on this platform yet, falling back to physical DPI scaling";
+        Warning{output} << "Platform::Sdl2Application: sorry, virtual DPI scaling not implemented on this platform, falling back to physical DPI scaling";
         #endif
     }
     #endif
 
-    /* At this point, either the virtual DPI query failed or a physical DPI
-       scaling is requested */
+    /* At this point, either the virtual DPI query failed, isn't implemented or
+       a physical DPI scaling is requested */
     #if !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
     CORRADE_INTERNAL_ASSERT(dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Virtual || dpiScalingPolicy == Implementation::Sdl2DpiScalingPolicy::Physical);
     #else
@@ -398,9 +513,13 @@ Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScaling
     Debug{verbose} << "Platform::Sdl2Application: physical DPI scaling" << dpiScaling.x();
     return dpiScaling;
 
-    /* Take a physical display DPI. On Linux it gets the (usually very off)
-       physical value from X11. */
-    #elif defined(CORRADE_TARGET_UNIX)
+    /* On sdl2 (not sdl2-compat layered over SDL3), SDL_GetDisplayDPI() can be
+       used to get the physical DPI for X11. On sdl2-compat it returns the
+       virtual value, which means attempting to use physical DPI scaling there
+       will result in the "sorry, not implemented" message at the end instead.
+       For Wayland framebuffer scaling was picked above, for Windows the
+       physical DPI scaling is implemented directly below. */
+    #elif defined(CORRADE_TARGET_UNIX) && SDL_PATCHLEVEL < 50
     Vector2 dpi;
     if(SDL_GetDisplayDPI(0, nullptr, &dpi.x(), &dpi.y()) == 0) {
         const Vector2 dpiScaling{dpi/96.0f};
@@ -428,9 +547,10 @@ Vector2 Sdl2Application::dpiScalingInternal(const Implementation::Sdl2DpiScaling
     Debug{verbose} << "Platform::Sdl2Application: physical DPI scaling" << dpiScaling;
     return dpiScaling;
 
-    /* Not implemented otherwise */
+    /* Not implemented otherwise. In particular, this fires for sdl2-compat and
+       Unix (Wayland or X11) when explicitly requesting physical scaling. */
     #else
-    Debug{verbose} << "Platform::Sdl2Application: sorry, physical DPI scaling not implemented on this platform yet";
+    Warning{output} << "Platform::Sdl2Application: sorry, physical DPI scaling not implemented on this platform, falling back to no scaling";
     return Vector2{1.0f};
     #endif
     #endif
@@ -483,7 +603,7 @@ void Sdl2Application::setWindowIcon(const ImageView2D& image) {
 
 bool Sdl2Application::tryCreate(const Configuration& configuration) {
     #ifdef MAGNUM_TARGET_GL
-    if(!(configuration.windowFlags() & Configuration::WindowFlag::Contextless))
+    if(!(configuration.flags() & Configuration::Flag::Contextless))
         return tryCreate(configuration, GLConfiguration{});
     #endif
 
@@ -504,7 +624,11 @@ bool Sdl2Application::tryCreate(const Configuration& configuration) {
         #endif
         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
         scaledWindowSize.x(), scaledWindowSize.y(),
-        SDL_WINDOW_ALLOW_HIGHDPI|SDL_WINDOW_OPENGL|Uint32(configuration.windowFlags() & ~Configuration::WindowFlag::Contextless))))
+        /* Unlike in tryCreate(const Configuration&, const GLConfiguration&)
+           below, here Flag::OpenGL *isn't* implicitly set and specifying it
+           (or not) is up to the user. Furthermore, Flag::Contextless is not a
+           real SDL_WINDOW_* flag but a fake value, clear it from the set. */
+        SDL_WINDOW_ALLOW_HIGHDPI|Uint32(configuration.flags() & ~Configuration::Flag::Contextless)|Uint32(configuration.windowFlags()))))
     {
         Error() << "Platform::Sdl2Application::tryCreate(): cannot create window:" << SDL_GetError();
         return false;
@@ -544,7 +668,7 @@ bool Sdl2Application::tryCreate(const Configuration& configuration) {
     const Vector2i scaledWindowSize = windowSize*_dpiScaling;
 
     Uint32 flags = SDL_OPENGL|SDL_HWSURFACE|SDL_DOUBLEBUF;
-    if(configuration.windowFlags() & Configuration::WindowFlag::Resizable) {
+    if(configuration.windowFlags() & WindowFlag::Resizable) {
         _flags |= Flag::Resizable;
         /* Actually not sure if this makes any difference:
            https://github.com/kripken/emscripten/issues/1731 */
@@ -562,8 +686,8 @@ bool Sdl2Application::tryCreate(const Configuration& configuration) {
 
 #ifdef MAGNUM_TARGET_GL
 bool Sdl2Application::tryCreate(const Configuration& configuration, const GLConfiguration& glConfiguration) {
-    CORRADE_ASSERT(!(configuration.windowFlags() & Configuration::WindowFlag::Contextless),
-        "Platform::Sdl2Application::tryCreate(): cannot pass Configuration::WindowFlag::Contextless when creating an OpenGL context", false);
+    CORRADE_ASSERT(!(configuration.flags() & Configuration::Flag::Contextless),
+        "Platform::Sdl2Application::tryCreate(): cannot pass Configuration::Flag::Contextless when creating an OpenGL context", false);
     CORRADE_ASSERT(_context->version() == GL::Version::None,
         "Platform::Sdl2Application::tryCreate(): context already created", false);
 
@@ -602,6 +726,7 @@ bool Sdl2Application::tryCreate(const Configuration& configuration, const GLConf
         glFlags |= GLConfiguration::Flag::NoError;
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_NO_ERROR, glFlags >= GLConfiguration::Flag::NoError);
+    SDL_GL_SetAttribute(SDL_GL_STEREO, glFlags >= GLConfiguration::Flag::Stereo);
 
     /* Set context version, if user-specified */
     if(glConfiguration.version() != GL::Version::None) {
@@ -660,7 +785,10 @@ bool Sdl2Application::tryCreate(const Configuration& configuration, const GLConf
         #endif
         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
         scaledWindowSize.x(), scaledWindowSize.y(),
-        SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN|SDL_WINDOW_ALLOW_HIGHDPI|Uint32(configuration.windowFlags()))))
+        /* As we're creating a GL context, set Flag::OpenGL implicitly -- users
+           are meant to set this flag only when a GL context explicitly *isn't*
+           created, such as together with Flag::Contextless */
+        SDL_WINDOW_HIDDEN|SDL_WINDOW_ALLOW_HIGHDPI|Uint32(configuration.flags()|Configuration::Flag::OpenGL)|Uint32(configuration.windowFlags()))))
     {
         Error() << "Platform::Sdl2Application::tryCreate(): cannot create window:" << SDL_GetError();
         return false;
@@ -723,7 +851,8 @@ bool Sdl2Application::tryCreate(const Configuration& configuration, const GLConf
         if(!(_window = SDL_CreateWindow(configuration.title().data(),
             SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
             scaledWindowSize.x(), scaledWindowSize.y(),
-            SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN|SDL_WINDOW_ALLOW_HIGHDPI|Uint32(configuration.windowFlags()))))
+            /* Flag::OpenGL set implicitly, same as above */
+            SDL_WINDOW_HIDDEN|SDL_WINDOW_ALLOW_HIGHDPI|Uint32(configuration.flags()|Configuration::Flag::OpenGL)|Uint32(configuration.windowFlags()))))
         {
             Error() << "Platform::Sdl2Application::tryCreate(): cannot create window:" << SDL_GetError();
             return false;
@@ -787,7 +916,7 @@ bool Sdl2Application::tryCreate(const Configuration& configuration, const GLConf
     const Vector2i scaledWindowSize = windowSize*_dpiScaling;
 
     Uint32 flags = SDL_OPENGL|SDL_HWSURFACE|SDL_DOUBLEBUF;
-    if(configuration.windowFlags() & Configuration::WindowFlag::Resizable) {
+    if(configuration.windowFlags() & WindowFlag::Resizable) {
         _flags |= Flag::Resizable;
         /* Actually not sure if this makes any difference:
            https://github.com/kripken/emscripten/issues/1731 */
@@ -814,8 +943,17 @@ bool Sdl2Application::tryCreate(const Configuration& configuration, const GLConf
 
     #ifndef CORRADE_TARGET_EMSCRIPTEN
     /* Show the window once we are sure that everything is okay */
-    if(!(configuration.windowFlags() & Configuration::WindowFlag::Hidden))
+    if(!(configuration.windowFlags() & WindowFlag::Hidden)) {
         SDL_ShowWindow(_window);
+        /* On sdl2 (not sdl2-compat layered over SDL3) this causes a minimized
+           window to get restored, so perform the minimization again after this
+           step. Distinction can be done using the patch version, which is at
+           least 50 for sdl2-compat. */
+        #if SDL_PATCHLEVEL < 50
+        if(configuration.windowFlags() >= WindowFlag::Minimized)
+            SDL_MinimizeWindow(_window);
+        #endif
+    }
     #endif
 
     /* Return true if the initialization succeeds */
@@ -878,6 +1016,82 @@ void Sdl2Application::setContainerCssClass(const Containers::StringView cssClass
 }
 #endif
 
+#ifndef CORRADE_TARGET_EMSCRIPTEN
+namespace {
+
+void toggleWindowFlags(const char* messagePrefix, SDL_Window* const window, const Sdl2Application::WindowFlags flags, const bool enabled) {
+    /* Somehow, bool *isn't* implicitly convertible to SDL_bool so have to
+       cast. Not passing SDL_bool as an argument because I'm not sure how ?:
+       and ! operators work on that damn thing. */
+
+    if(flags >= Sdl2Application::WindowFlag::Resizable)
+        SDL_SetWindowResizable(window, SDL_bool(enabled));
+
+    #ifndef CORRADE_TARGET_EMSCRIPTEN
+    /* SDL_WINDOW_FULLSCREEN_DESKTOP is a superset of SDL_WINDOW_FULLSCREEN but
+       don't rely on that, check for both */
+    if(const Sdl2Application::WindowFlags fullscreen = flags & (Sdl2Application::WindowFlag::Fullscreen|Sdl2Application::WindowFlag::FullscreenDesktop)) {
+        SDL_SetWindowFullscreen(window, enabled ? Uint32(fullscreen) : 0);
+    }
+    /* Funny that here it's the inverse of the window flag */
+    if(flags >= Sdl2Application::WindowFlag::Borderless)
+        SDL_SetWindowBordered(window, SDL_bool(!enabled));
+    /* And here it's two separate API functions, even. Heh. */
+    if(flags >= Sdl2Application::WindowFlag::Hidden)
+        enabled ? SDL_HideWindow(window) : SDL_ShowWindow(window);
+    /* Here, for consistency, it's three separate APIs */
+    if(flags >= Sdl2Application::WindowFlag::Maximized)
+        enabled ? SDL_MaximizeWindow(window) : SDL_RestoreWindow(window);
+    if(flags >= Sdl2Application::WindowFlag::Minimized)
+        enabled ? SDL_MinimizeWindow(window) : SDL_RestoreWindow(window);
+    /* Here the documentation doesn't even say the flag and the setter are
+       related. The only actually usable info about what's up is in the diff of
+        https://github.com/libsdl-org/SDL/commit/6b057c67839e707a0e593fd61e7f4577c8fae333
+       where it looks like SDL_SetWindowGrab() is what originally was matching
+       SDL_WINDOW_INPUT_GRABBED, and the commit extended it to separate mouse
+       and keyboard handling without actually documenting the relation. */
+    if(flags >= Sdl2Application::WindowFlag::MouseLocked)
+        #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 20016
+        SDL_SetWindowMouseGrab
+        #else
+        SDL_SetWindowGrab
+        #endif
+        (window, SDL_bool(enabled));
+
+    #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 20016
+    if(flags >= Sdl2Application::WindowFlag::AlwaysOnTop)
+        SDL_SetWindowAlwaysOnTop(window, SDL_bool(enabled));
+    #endif
+
+    if(flags & (
+        #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL < 20016
+        Sdl2Application::WindowFlag::AlwaysOnTop|
+        #endif
+        Sdl2Application::WindowFlag::SkipTaskbar|
+        Sdl2Application::WindowFlag::Utility|
+        Sdl2Application::WindowFlag::Tooltip|
+        Sdl2Application::WindowFlag::PopupMenu)
+    )
+        Warning{} << messagePrefix << "toggling WindowFlag::"
+            #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL < 20016
+            "AlwaysOnTop, "
+            #endif
+            "SkipTaskbar, Utility, Tooltip or PopupMenu is not supported";
+    #endif
+}
+
+}
+
+void Sdl2Application::addWindowFlags(const WindowFlags flags) {
+    toggleWindowFlags("Platform::Sdl2Application::addWindowFlags():", _window, flags, true);
+}
+
+void Sdl2Application::clearWindowFlags(const WindowFlags flags) {
+    toggleWindowFlags("Platform::Sdl2Application::clearWindowFlags():", _window, flags, false);
+}
+#endif
+
+#ifdef MAGNUM_TARGET_GL
 void Sdl2Application::swapBuffers() {
     #ifndef CORRADE_TARGET_EMSCRIPTEN
     SDL_GL_SwapWindow(_window);
@@ -911,6 +1125,7 @@ bool Sdl2Application::setSwapInterval(const Int interval) {
     else _flags &= ~Flag::VSyncEnabled;
     return true;
 }
+#endif
 
 #ifndef CORRADE_TARGET_EMSCRIPTEN
 void Sdl2Application::setMinimalLoopPeriod(const Nanoseconds time) {
@@ -1403,16 +1618,34 @@ void Sdl2Application::setCursor(Cursor cursor) {
 
     if(cursor == Cursor::Hidden) {
         SDL_ShowCursor(SDL_DISABLE);
-        SDL_SetWindowGrab(_window, SDL_FALSE);
+        /* As of 2.0.16 there's a separate keyboard grab which is toggleable
+           with SDL_HINT_GRAB_KEYBOARD, ensure it's dealing with just the
+           mouse */
+        #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 20016
+        SDL_SetWindowMouseGrab
+        #else
+        SDL_SetWindowGrab
+        #endif
+            (_window, SDL_FALSE);
         SDL_SetRelativeMouseMode(SDL_FALSE);
         return;
     } else if(cursor == Cursor::HiddenLocked) {
-        SDL_SetWindowGrab(_window, SDL_TRUE);
+        #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 20016
+        SDL_SetWindowMouseGrab
+        #else
+        SDL_SetWindowGrab
+        #endif
+            (_window, SDL_TRUE);
         SDL_SetRelativeMouseMode(SDL_TRUE);
         return;
     } else {
         SDL_ShowCursor(SDL_ENABLE);
-        SDL_SetWindowGrab(_window, SDL_FALSE);
+        #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 20016
+        SDL_SetWindowMouseGrab
+        #else
+        SDL_SetWindowGrab
+        #endif
+            (_window, SDL_FALSE);
         SDL_SetRelativeMouseMode(SDL_FALSE);
     }
 
@@ -1443,7 +1676,7 @@ Sdl2Application::Cursor Sdl2Application::cursor() {
 
     SDL_Cursor* cursor = SDL_GetCursor();
 
-    if(cursor) for(UnsignedInt i = 0; i < sizeof(_cursors); i++)
+    if(cursor) for(UnsignedInt i = 0; i < Containers::arraySize(_cursors); i++)
         if(_cursors[i] == cursor)
             return Cursor(i);
 
@@ -1700,8 +1933,6 @@ Sdl2Application::GLConfiguration::GLConfiguration():
     addFlags(Flag::ForwardCompatible);
     #endif
 }
-
-Sdl2Application::GLConfiguration::~GLConfiguration() = default;
 #endif
 
 Sdl2Application::Configuration::Configuration():

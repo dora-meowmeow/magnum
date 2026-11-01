@@ -259,7 +259,7 @@ EmscriptenApplication::~EmscriptenApplication() {
     #ifdef MAGNUM_TARGET_GL
     /* Destroy Magnum context first to avoid it potentially accessing the
        now-destroyed GL context after. If the application was created with
-       WindowFlag::Contextless set, the optional is still populated but with
+       Flag::Contextless set, the optional is still populated but with
        _context->tryCreate() not set yet. The only way to check whether it's
        actually created is to check for version, consistently with the assert
        in the GL tryCreate() implementation below. */
@@ -314,7 +314,7 @@ Vector2 EmscriptenApplication::dpiScaling(const Configuration& configuration) co
 
 bool EmscriptenApplication::tryCreate(const Configuration& configuration) {
     #ifdef MAGNUM_TARGET_GL
-    if(!(configuration.windowFlags() & Configuration::WindowFlag::Contextless)) {
+    if(!(configuration.flags() & Configuration::Flag::Contextless)) {
         return tryCreate(configuration, GLConfiguration{});
     }
     #endif
@@ -357,16 +357,15 @@ bool EmscriptenApplication::tryCreate(const Configuration& configuration) {
     const Vector2i scaledCanvasSize = canvasSize*_dpiScaling*_lastKnownDevicePixelRatio;
     emscripten_set_canvas_element_size(_canvasTarget.data(), scaledCanvasSize.x(), scaledCanvasSize.y());
 
-    setupCallbacks(!!(configuration.windowFlags() & Configuration::WindowFlag::Resizable));
-    setupAnimationFrame(!!(configuration.windowFlags() & Configuration::WindowFlag::AlwaysRequestAnimationFrame));
+    setupCallbacks(configuration.windowFlags(), configuration.flags() >= Configuration::Flag::AlwaysRequestAnimationFrame);
 
     return true;
 }
 
 #ifdef MAGNUM_TARGET_GL
 bool EmscriptenApplication::tryCreate(const Configuration& configuration, const GLConfiguration& glConfiguration) {
-    CORRADE_ASSERT(!(configuration.windowFlags() & Configuration::WindowFlag::Contextless),
-        "Platform::EmscriptenApplication::tryCreate(): cannot pass Configuration::WindowFlag::Contextless when creating an OpenGL context", false);
+    CORRADE_ASSERT(!(configuration.flags() & Configuration::Flag::Contextless),
+        "Platform::EmscriptenApplication::tryCreate(): cannot pass Configuration::Flag::Contextless when creating an OpenGL context", false);
     CORRADE_ASSERT(_context->version() == GL::Version::None,
         "Platform::EmscriptenApplication::tryCreate(): window with OpenGL context already created", false);
 
@@ -378,22 +377,17 @@ bool EmscriptenApplication::tryCreate(const Configuration& configuration, const 
     attrs.stencil = glConfiguration.stencilBufferSize() > 0;
     attrs.antialias = glConfiguration.sampleCount() > 0;
 
-    attrs.premultipliedAlpha =
-        !!(glConfiguration.flags() & GLConfiguration::Flag::PremultipliedAlpha);
-    attrs.preserveDrawingBuffer =
-        !!(glConfiguration.flags() & GLConfiguration::Flag::PreserveDrawingBuffer);
-    if(glConfiguration.flags() & GLConfiguration::Flag::PowerPreferenceLowPower)
+    attrs.premultipliedAlpha = glConfiguration.flags() >= GLConfiguration::Flag::PremultipliedAlpha;
+    attrs.preserveDrawingBuffer = glConfiguration.flags() >= GLConfiguration::Flag::PreserveDrawingBuffer;
+    if(glConfiguration.flags() >= GLConfiguration::Flag::PowerPreferenceLowPower)
         attrs.powerPreference = EM_WEBGL_POWER_PREFERENCE_LOW_POWER;
-    else if(glConfiguration.flags() & GLConfiguration::Flag::PowerPreferenceHighPerformance)
+    else if(glConfiguration.flags() >= GLConfiguration::Flag::PowerPreferenceHighPerformance)
         attrs.powerPreference = EM_WEBGL_POWER_PREFERENCE_HIGH_PERFORMANCE;
     else
         attrs.powerPreference = EM_WEBGL_POWER_PREFERENCE_DEFAULT;
-    attrs.explicitSwapControl =
-        !!(glConfiguration.flags() & GLConfiguration::Flag::ExplicitSwapControl);
-    attrs.failIfMajorPerformanceCaveat =
-        !!(glConfiguration.flags() & GLConfiguration::Flag::FailIfMajorPerformanceCaveat);
-    attrs.enableExtensionsByDefault =
-        !!(glConfiguration.flags() & GLConfiguration::Flag::EnableExtensionsByDefault);
+    attrs.explicitSwapControl = glConfiguration.flags() >= GLConfiguration::Flag::ExplicitSwapControl;
+    attrs.failIfMajorPerformanceCaveat = glConfiguration.flags() >= GLConfiguration::Flag::FailIfMajorPerformanceCaveat;
+    attrs.enableExtensionsByDefault = glConfiguration.flags() >= GLConfiguration::Flag::EnableExtensionsByDefault;
 
     #ifdef MAGNUM_TARGET_GLES2 /* WebGL 1 */
     attrs.majorVersion = 1;
@@ -454,8 +448,7 @@ bool EmscriptenApplication::tryCreate(const Configuration& configuration, const 
     /* Make the context current */
     CORRADE_INTERNAL_ASSERT_OUTPUT(emscripten_webgl_make_context_current(_glContext = context) == EMSCRIPTEN_RESULT_SUCCESS);
 
-    setupCallbacks(!!(configuration.windowFlags() & Configuration::WindowFlag::Resizable));
-    setupAnimationFrame(!!(configuration.windowFlags() & Configuration::WindowFlag::AlwaysRequestAnimationFrame));
+    setupCallbacks(configuration.windowFlags(), configuration.flags() >= Configuration::Flag::AlwaysRequestAnimationFrame);
 
     /* Return true if the initialization succeeds */
     return _context->tryCreate(glConfiguration);
@@ -492,9 +485,11 @@ void EmscriptenApplication::setContainerCssClass(const Containers::StringView cs
     handleCanvasResize(nullptr);
 }
 
+#ifdef MAGNUM_TARGET_GL
 void EmscriptenApplication::swapBuffers() {
     emscripten_webgl_commit_frame();
 }
+#endif
 
 /* Called from window resize event but also explicitly from
    setContainerCssClass() */
@@ -629,7 +624,7 @@ template<class T> Vector2 updatePreviousTouch(T(&previousTouches)[32], const Int
 
 }
 
-void EmscriptenApplication::setupCallbacks(bool resizable) {
+void EmscriptenApplication::setupCallbacks(const WindowFlags flags, const bool alwaysRequestAnimationFrame) {
     /* Since 1.38.17 all emscripten_set_*_callback() are macros. Play it safe
        and wrap all lambdas in () to avoid the preprocessor getting upset when
        seeing commas. Furthermore, in 13.1.62 the EM_BOOL type was changed from
@@ -641,7 +636,7 @@ void EmscriptenApplication::setupCallbacks(bool resizable) {
        to cache the last known canvas size and fire the event only if that
        changes. Better than polling for this change in every frame like
        Sdl2Application does, but still not ideal. */
-    if(resizable) {
+    if(flags >= WindowFlag::Resizable) {
         const char* target = EMSCRIPTEN_EVENT_TARGET_WINDOW;
         auto cb = [](int, const EmscriptenUiEvent* event, void* userData) -> EM_BOOL {
             static_cast<EmscriptenApplication*>(userData)->handleCanvasResize(event);
@@ -960,10 +955,9 @@ void EmscriptenApplication::setupCallbacks(bool resizable) {
             static_cast<EmscriptenApplication*>(userData)->keyReleaseEvent(e);
             return e.isAccepted();
         }));
-}
 
-void EmscriptenApplication::setupAnimationFrame(bool forceAnimationFrame) {
-    if(forceAnimationFrame) {
+    /* Main loop callback */
+    if(alwaysRequestAnimationFrame) {
         _callback = [](void* userData) -> int {
             auto& app = *static_cast<EmscriptenApplication*>(userData);
 
@@ -1058,7 +1052,7 @@ EmscriptenApplication::Cursor EmscriptenApplication::cursor() {
 }
 
 bool EmscriptenApplication::isTextInputActive() const {
-    return !!(_flags & Flag::TextInputActive);
+    return _flags >= Flag::TextInputActive;
 }
 
 void EmscriptenApplication::startTextInput() {

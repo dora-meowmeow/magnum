@@ -1,10 +1,11 @@
+#ifndef Magnum_SceneTools_Test_cpuVariantHelpers_h
+#define Magnum_SceneTools_Test_cpuVariantHelpers_h
 /*
     This file is part of Magnum.
 
     Copyright © 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019,
                 2020, 2021, 2022, 2023, 2024, 2025, 2026
               Vladimír Vondruš <mosra@centrum.cz>
-    Copyright © 2016 Alice Margatroid <loveoverwhelming@gmail.com>
 
     Permission is hereby granted, free of charge, to any person obtaining a
     copy of this software and associated documentation files (the "Software"),
@@ -25,32 +26,45 @@
     DEALINGS IN THE SOFTWARE.
 */
 
+#include <Corrade/Cpu.h>
 #include <Corrade/Containers/String.h>
-#include <Corrade/TestSuite/Tester.h>
+#include <Corrade/Utility/Assert.h>
 
-#include "Magnum/Magnum.h"
-#include "MagnumPlugins/WavAudioImporter/WavHeader.h"
+namespace Magnum { namespace SceneTools { namespace Test {
 
-namespace Magnum { namespace Audio { namespace Test { namespace {
-
-struct WavHeaderTest: TestSuite::Tester {
-    explicit WavHeaderTest();
-
-    void debugAudioFormat();
-};
-
-WavHeaderTest::WavHeaderTest() {
-    addTests({&WavHeaderTest::debugAudioFormat});
+template<class T, std::size_t size> constexpr std::size_t cpuVariantCount(T(&)[size]) {
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    return size;
+    #else
+    return 1;
+    #endif
 }
 
-void WavHeaderTest::debugAudioFormat() {
+template<class T> inline Containers::String cpuVariantName(T& data) {
     Containers::String out;
-
-    Debug{&out} << Implementation::WavAudioFormat::IeeeFloat << Implementation::WavAudioFormat(0xdead);
-    CORRADE_COMPARE(out, "Audio::WavAudioFormat::IeeeFloat Audio::WavAudioFormat(0xdead)\n");
+    Utility::Debug{&out, Utility::Debug::Flag::NoNewlineAtTheEnd} << Utility::Debug::packed << data.features;
+    return out;
 }
 
-}}}}
+template<class T, std::size_t size> inline const T& cpuVariantCompiled(const T(&data)[size]) {
+    const Cpu::Features features =
+        #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+        Cpu::runtimeFeatures()
+        #else
+        Cpu::compiledFeatures()
+        #endif
+        ;
+    for(std::size_t i = size; i != 0; --i)
+        if(features >= data[i - 1].features)
+            return data[i - 1];
 
-CORRADE_TEST_MAIN(Magnum::Audio::Test::WavHeaderTest)
+    CORRADE_INTERNAL_ASSERT_UNREACHABLE();
+}
 
+template<class T> inline bool isCpuVariantSupported(T& data) {
+    return Cpu::runtimeFeatures() >= data.features;
+}
+
+}}}
+
+#endif

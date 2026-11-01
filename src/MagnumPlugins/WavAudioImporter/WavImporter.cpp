@@ -31,14 +31,58 @@
 #include <Corrade/Utility/Debug.h>
 #include <Corrade/Utility/EndiannessBatch.h>
 
-#include "MagnumPlugins/WavAudioImporter/WavHeader.h"
-
 namespace Magnum { namespace Audio {
 
-using Implementation::RiffChunk;
-using Implementation::WavAudioFormat;
-using Implementation::WavFormatChunk;
-using Implementation::WavHeaderChunk;
+namespace {
+
+/* WAV audio format */
+enum class WavAudioFormat: UnsignedShort {
+    Pcm = 0x0001,           /* PCM */
+    AdPcm = 0x0002,         /* Adaptive Differential PCM */
+    IeeeFloat = 0x0003,     /* IEEE Float */
+    ALaw = 0x0006,          /* A-Law */
+    MuLaw = 0x0007,         /* μ-Law */
+    Extensible = 0xfffe     /* Extensible */
+};
+
+#pragma pack(1)
+/* RIFF chunk */
+struct RiffChunk {
+    char chunkId[4];        /* chunk name (4 characters) */
+    UnsignedInt chunkSize;  /* size of chunk (does not include chunk header) */
+};
+static_assert(sizeof(RiffChunk) == 8, "RiffChunk size is not 8 bytes");
+#pragma pack()
+
+#pragma pack(1)
+/* WAV file header */
+struct WavHeaderChunk {
+    RiffChunk chunk;        /* Starting RIFF chunk */
+    char format[4];         /* `WAVE` characters */
+};
+static_assert(sizeof(WavHeaderChunk) == 12, "WavHeaderChunk size is not 12 bytes");
+#pragma pack()
+
+#pragma pack(1)
+/* WAV 'fmt' header */
+struct WavFormatChunk {
+    /* GCC 4.8 needs this, otherwise it can't store this in an Optional. It
+       also can't be just =default, otherwise it'll still try to construct the
+       members when using {} */
+    WavFormatChunk() {}
+
+    RiffChunk chunk;                /* Starting RIFF chunk */
+    WavAudioFormat audioFormat;     /* Audio format */
+    UnsignedShort numChannels;      /* 1 = Mono, 2 = Stereo */
+    UnsignedInt sampleRate;         /* Sample rate in Hz */
+    UnsignedInt byteRate;           /* Bytes per second */
+    UnsignedShort blockAlign;       /* Bytes per sample (all channels) */
+    UnsignedShort bitsPerSample;    /* Bits per sample (one channel) */
+};
+static_assert(sizeof(WavFormatChunk) == 24, "WavFormatChunk size is not 24 bytes");
+#pragma pack()
+
+}
 
 #ifdef MAGNUM_BUILD_DEPRECATED
 WavImporter::WavImporter() = default; /* LCOV_EXCL_LINE */
@@ -53,17 +97,18 @@ bool WavImporter::doIsOpened() const { return !!_data; }
 void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
     /* Check file size */
     if(data.size() < sizeof(WavHeaderChunk) + sizeof(WavFormatChunk) + sizeof(RiffChunk)) {
-        Error() << "Audio::WavImporter::openData(): the file is too short:" << data.size() << "bytes";
+        Error{} << "Audio::WavImporter::openData(): the file is too short:" << data.size() << "bytes";
         return;
     }
 
-    /* Get the RIFF/WAV header */
+    /* Get the RIFF/WAV header. Can't use {} here because GCC 4.8 then attempts
+       to initialize individual members instead of doing a copy. */
     WavHeaderChunk header(*reinterpret_cast<const WavHeaderChunk*>(data.begin()));
 
     /* Check RIFF/WAV file signature */
     if((std::strncmp(header.chunk.chunkId, "RIFF", 4) != 0 && std::strncmp(header.chunk.chunkId, "RIFX", 4) != 0) ||
        std::strncmp(header.format, "WAVE", 4) != 0) {
-        Error() << "Audio::WavImporter::openData(): the file signature is invalid";
+        Error{} << "Audio::WavImporter::openData(): the file signature is invalid";
         return;
     }
 
@@ -77,7 +122,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
 
     /* Check file size */
     if(header.chunk.chunkSize < 36 || header.chunk.chunkSize + 8 != data.size()) {
-        Error() << "Audio::WavImporter::openData(): the file has improper size, expected"
+        Error{} << "Audio::WavImporter::openData(): the file has improper size, expected"
                 << header.chunk.chunkSize + 8 << "but got" << data.size();
         return;
     }
@@ -102,7 +147,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
 
         if(std::strncmp(currChunk->chunkId, "fmt ", 4) == 0) {
             if(formatChunk) {
-                Error() << "Audio::WavImporter::openData(): the file contains too many format chunks";
+                Error{} << "Audio::WavImporter::openData(): the file contains too many format chunks";
                 return;
             }
 
@@ -110,7 +155,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
 
         } else if(std::strncmp(currChunk->chunkId, "data", 4) == 0) {
             if(dataChunk != nullptr) {
-                Error() << "Audio::WavImporter::openData(): the file contains too many data chunks";
+                Error{} << "Audio::WavImporter::openData(): the file contains too many data chunks";
                 return;
             }
 
@@ -122,13 +167,13 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
 
     /* Make sure we actually got a format chunk */
     if(!formatChunk) {
-        Error() << "Audio::WavImporter::openData(): the file contains no format chunk";
+        Error{} << "Audio::WavImporter::openData(): the file contains no format chunk";
         return;
     }
 
     /* Make sure we actually got a data chunk */
     if(dataChunk == nullptr) {
-        Error() << "Audio::WavImporter::openData(): the file contains no data chunk";
+        Error{} << "Audio::WavImporter::openData(): the file contains no data chunk";
         return;
     }
 
@@ -152,7 +197,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
         else if(formatChunk->numChannels == 2 && formatChunk->bitsPerSample == 16)
              _format = BufferFormat::Stereo16;
         else {
-            Error() << "Audio::WavImporter::openData(): PCM with unsupported channel count"
+            Error{} << "Audio::WavImporter::openData(): PCM with unsupported channel count"
                     << formatChunk->numChannels << "with" << formatChunk->bitsPerSample
                     << "bits per sample";
             return;
@@ -169,7 +214,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
         else if(formatChunk->numChannels == 2 && formatChunk->bitsPerSample == 64)
             _format = BufferFormat::StereoDouble;
         else {
-            Error() << "Audio::WavImporter::openData(): IEEE with unsupported channel count"
+            Error{} << "Audio::WavImporter::openData(): IEEE with unsupported channel count"
                     << formatChunk->numChannels << "with" << formatChunk->bitsPerSample
                     << "bits per sample";
             return;
@@ -182,7 +227,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
         else if(formatChunk->numChannels == 2)
             _format = BufferFormat::StereoALaw;
         else {
-            Error() << "Audio::WavImporter::openData(): ALaw with unsupported channel count"
+            Error{} << "Audio::WavImporter::openData(): ALaw with unsupported channel count"
                     << formatChunk->numChannels << "with" << formatChunk->bitsPerSample
                     << "bits per sample";
             return;
@@ -195,7 +240,7 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
         else if(formatChunk->numChannels == 2)
             _format = BufferFormat::StereoMuLaw;
         else {
-            Error() << "Audio::WavImporter::openData(): MuLaw with unsupported channel count"
+            Error{} << "Audio::WavImporter::openData(): MuLaw with unsupported channel count"
                     << formatChunk->numChannels << "with" << formatChunk->bitsPerSample
                     << "bits per sample";
             return;
@@ -203,20 +248,34 @@ void WavImporter::doOpenData(Containers::ArrayView<const char> data) {
 
     /* Unknown/unimplemented format */
     } else {
-        Error() << "Audio::WavImporter::openData(): unsupported format" << formatChunk->audioFormat;
+        Error error;
+        error << "Audio::WavImporter::openData(): unsupported format" << Debug::hex << UnsignedShort(formatChunk->audioFormat);
+        switch(formatChunk->audioFormat) {
+            case WavAudioFormat::AdPcm: error << "(ADPCM)"; break;
+            case WavAudioFormat::Extensible: error << "(EXTENSIBLE)"; break;
+            /* These were handled in other branches before. Anything else will
+               print just the hex value above. */
+            /* LCOV_EXCL_START */
+            case WavAudioFormat::Pcm:
+            case WavAudioFormat::IeeeFloat:
+            case WavAudioFormat::ALaw:
+            case WavAudioFormat::MuLaw:
+                CORRADE_INTERNAL_ASSERT_UNREACHABLE();
+            /* LCOV_EXCL_STOP */
+        }
         return;
     }
 
     /* Size sanity checks */
     if(headerSize + offset > data.size()) {
-        Error() << "Audio::WavImporter::openData(): file size doesn't match computed size";
+        Error{} << "Audio::WavImporter::openData(): file size doesn't match computed size";
         return;
     }
 
     /* Format sanity checks */
     if(formatChunk->blockAlign != formatChunk->numChannels * formatChunk->bitsPerSample / 8 ||
        formatChunk->byteRate != formatChunk->sampleRate * formatChunk->blockAlign) {
-        Error() << "Audio::WavImporter::openData(): the file is corrupted";
+        Error{} << "Audio::WavImporter::openData(): the file is corrupted";
         return;
     }
 

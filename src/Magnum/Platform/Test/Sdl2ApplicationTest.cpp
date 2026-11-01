@@ -348,8 +348,10 @@ struct Sdl2ApplicationTest: Platform::Application {
             Debug{} << Key::M << "is pressed";
         #endif
 
+        #ifdef MAGNUM_TARGET_GL
         if(!_contextless)
             swapBuffers();
+        #endif
 
         if(_redraw)
             redraw();
@@ -386,84 +388,7 @@ struct Sdl2ApplicationTest: Platform::Application {
     CORRADE_IGNORE_DEPRECATED_POP
     #endif
 
-    void keyPressEvent(KeyEvent& event) override {
-        Debug{} << "key press:" << event.key() << event.keyName() << "scancode:" << event.scanCode()
-            #ifndef CORRADE_TARGET_EMSCRIPTEN
-            << event.scanCodeName()
-            #endif
-            << event.modifiers()
-            #if !defined(CORRADE_TARGET_EMSCRIPTEN) || __EMSCRIPTEN_MAJOR__*10000 + __EMSCRIPTEN_MINOR__*100 + __EMSCRIPTEN_TINY__ >= 30125
-            << "converted:"
-            #ifndef CORRADE_TARGET_EMSCRIPTEN
-            << scanCodeToKey(event.scanCode())
-            #endif
-            << keyToScanCode(event.key())
-            #endif
-            ;
-
-        if(event.key() == Key::F1) {
-            Debug{} << "starting text input";
-            startTextInput();
-        } else if(event.key() == Key::F2) {
-            _redraw = !_redraw;
-            Debug{} << "redrawing" << (_redraw ? "enabled" : "disabled");
-            if(_redraw)
-                redraw();
-        }
-        #ifndef CORRADE_TARGET_EMSCRIPTEN
-        else if(event.key() == Key::V && !(event.modifiers() & ~(Modifier::CapsLock|Modifier::NumLock))) {
-            _vsync = !_vsync;
-            Debug{} << "vsync" << (_vsync? "on" : "off");
-            setSwapInterval(_vsync ? 1 : 0);
-        } else if(event.key() == Key::C && (event.modifiers() & ~(Modifier::CapsLock|Modifier::NumLock)) == Modifier::Ctrl) {
-            Debug{} << "Setting clipboard contents";
-            setClipboardText("this text shouldn't have an exclamation at the end!!"_s.exceptSuffix(2));
-        } else if(event.key() == Key::V && (event.modifiers() & ~(Modifier::CapsLock|Modifier::NumLock)) == Modifier::Ctrl) {
-            Debug{} << "Clipboard contents:" << clipboardText();
-        }
-        #endif
-        else if(event.key() == Key::Esc) {
-            Debug{} << "stopping text input";
-            stopTextInput();
-        } else if(event.key() == Key::T) {
-            Debug{} << "setting window title";
-            setWindowTitle("This is a UTF-8 Window Title™ and it should have no exclamation mark!!"_s.exceptSuffix(2));
-        }
-        #ifndef CORRADE_TARGET_EMSCRIPTEN
-        else if(event.key() == Key::S) {
-            Debug{} << "setting window size, which should trigger a viewport event";
-            setWindowSize(Vector2i{300, 200});
-        } else if(event.key() == Key::W) {
-            Debug{} << "setting max window size, which should trigger a viewport event";
-            setMaxWindowSize(Vector2i{700, 500});
-        }
-        #endif
-        else if(event.key() == Key::H) {
-            Debug{} << "toggling hand cursor";
-            setCursor(cursor() == Cursor::Arrow ? Cursor::Hand : Cursor::Arrow);
-        }
-        #ifndef CORRADE_TARGET_EMSCRIPTEN
-        else if(event.key() == Key::L) {
-            Debug{} << "toggling locked mouse";
-            setCursor(cursor() == Cursor::Arrow ? Cursor::HiddenLocked : Cursor::Arrow);
-        }
-        #else
-        else if(event.key() == Key::F) {
-            Debug{} << "toggling fullscreen";
-            setContainerCssClass((_fullscreen ^= true) ? "mn-fullsize" : "");
-        }
-        #endif
-        else if(event.key() == Key::X) {
-            Debug{} << "requesting an exit with code 5";
-            exit(5);
-        }
-
-        /* With EmscriptenApplication, this makes the event stop from
-           propagating further to the page (such as when pressing F1).
-           Unfortunately on SDL this doesn't as there's no API to actually mark
-           events as accepted. */
-        event.setAccepted();
-    }
+    void keyPressEvent(KeyEvent& event) override;
 
     void keyReleaseEvent(KeyEvent& event) override {
         Debug{} << "key release:" << event.key() << event.keyName() << "scancode:" << event.scanCode()
@@ -518,12 +443,14 @@ struct Sdl2ApplicationTest: Platform::Application {
     #endif
 
     private:
-        bool _contextless = true;
+        #ifdef MAGNUM_TARGET_GL
+        bool _contextless;
+        #endif
         #ifdef CORRADE_TARGET_EMSCRIPTEN
         bool _fullscreen = false;
         #endif
         bool _redraw = false;
-        #ifndef CORRADE_TARGET_EMSCRIPTEN
+        #if !defined(CORRADE_TARGET_EMSCRIPTEN) && defined(MAGNUM_TARGET_GL)
         bool _vsync = false;
         #endif
 };
@@ -534,10 +461,18 @@ Sdl2ApplicationTest::Sdl2ApplicationTest(const Arguments& arguments): Platform::
         .addSkippedPrefix("magnum", "engine-specific options")
         .addBooleanOption("exit-immediately").setHelp("exit-immediately", "exit the application immediately from the constructor, to test that the app doesn't run any event handlers after")
         #ifndef CORRADE_TARGET_EMSCRIPTEN
+        .addBooleanOption("fullscreen").setHelp("fullscreen", "fullscreen window")
+        .addBooleanOption("fullscreen-desktop").setHelp("fullscreen-desktop", "fullscreen window at the current desktop resolution")
         .addBooleanOption("borderless").setHelp("borderless", "no window decoration")
-        #if SDL_MAJOR_VERSION*1000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 2005
+        .addBooleanOption("hidden").setHelp("hidden", "hidden window")
+        .addBooleanOption("maximized").setHelp("maximized", "maximized window")
+        .addBooleanOption("minimized").setHelp("minimized", "minimized window")
+        .addBooleanOption("mouse-locked").setHelp("mouse-locked", "window with mouse locked")
         .addBooleanOption("always-on-top").setHelp("always-on-top", "always on top")
-        #endif
+        .addBooleanOption("skip-taskbar").setHelp("skip-taskbar", "don't add the window to taskbar")
+        .addBooleanOption("utility").setHelp("utility", "window should be treated as a utility window")
+        .addBooleanOption("tooltip").setHelp("tooltip", "window should be treated as a tooltip")
+        .addBooleanOption("popup-menu").setHelp("popup-menu", "window should be treated as a popup menu")
         #endif
         #ifdef MAGNUM_TARGET_GL
         .addBooleanOption("quiet").setHelp("quiet", "like --magnum-log quiet, but specified via a Context::Configuration instead")
@@ -553,23 +488,57 @@ Sdl2ApplicationTest::Sdl2ApplicationTest(const Arguments& arguments): Platform::
 
     Configuration conf;
     conf.setTitle("Window title that should have no exclamation mark!!"_s.exceptSuffix(2))
-        .setWindowFlags(Configuration::WindowFlag::Resizable);
-    if(!args.value("dpi-scaling").empty())
-        conf.setSize({800, 600}, args.value<Vector2>("dpi-scaling"));
+        .addWindowFlags(WindowFlag::Resizable);
+    if(const Containers::StringView dpiScaling = args.value<Containers::StringView>("dpi-scaling")) {
+        if(dpiScaling == "default")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Default);
+        #if defined(CORRADE_TARGET_APPLE) || (defined(CORRADE_TARGET_UNIX) && SDL_PATCHLEVEL < 50)
+        else if(dpiScaling == "framebuffer")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Framebuffer);
+        #endif
+        #ifndef CORRADE_TARGET_APPLE
+        #if !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
+        else if(dpiScaling == "virtual")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Virtual);
+        #endif
+        else if(dpiScaling == "physical")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Physical);
+        #endif
+        else
+            conf.setSize(conf.size(), args.value<Vector2>("dpi-scaling"));
+    }
     #ifndef CORRADE_TARGET_EMSCRIPTEN
+    if(args.isSet("fullscreen"))
+        conf.addWindowFlags(WindowFlag::Fullscreen);
+    if(args.isSet("fullscreen-desktop"))
+        conf.addWindowFlags(WindowFlag::FullscreenDesktop);
     if(args.isSet("borderless"))
-        conf.addWindowFlags(Configuration::WindowFlag::Borderless);
-    #if SDL_MAJOR_VERSION*1000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 2005
+        conf.addWindowFlags(WindowFlag::Borderless);
+    if(args.isSet("hidden"))
+        conf.addWindowFlags(WindowFlag::Hidden);
+    if(args.isSet("maximized"))
+        conf.addWindowFlags(WindowFlag::Maximized);
+    if(args.isSet("minimized"))
+        conf.addWindowFlags(WindowFlag::Minimized);
+    if(args.isSet("mouse-locked"))
+        conf.addWindowFlags(WindowFlag::MouseLocked);
     if(args.isSet("always-on-top"))
-        conf.addWindowFlags(Configuration::WindowFlag::AlwaysOnTop);
-    #endif
+        conf.addWindowFlags(WindowFlag::AlwaysOnTop);
+    if(args.isSet("skip-taskbar"))
+        conf.addWindowFlags(WindowFlag::SkipTaskbar);
+    if(args.isSet("utility"))
+        conf.addWindowFlags(WindowFlag::Utility);
+    if(args.isSet("tooltip"))
+        conf.addWindowFlags(WindowFlag::Tooltip);
+    if(args.isSet("popup-menu"))
+        conf.addWindowFlags(WindowFlag::PopupMenu);
     #endif
     #ifdef MAGNUM_TARGET_GL
     if((_contextless = args.isSet("contextless")))
     #endif
     {
         #ifdef MAGNUM_TARGET_GL
-        conf.addWindowFlags(Configuration::WindowFlag::Contextless);
+        conf.addFlags(Configuration::Flag::Contextless);
         #endif
         create(conf);
     }
@@ -599,7 +568,6 @@ Sdl2ApplicationTest::Sdl2ApplicationTest(const Arguments& arguments): Platform::
         << dpiScaling();
 
     #ifndef CORRADE_TARGET_EMSCRIPTEN
-    #if SDL_MAJOR_VERSION*1000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 2005
     Utility::Resource rs{"icons"};
     PluginManager::Manager<Trade::AbstractImporter> manager;
     Containers::Pointer<Trade::AbstractImporter> importer;
@@ -608,15 +576,136 @@ Sdl2ApplicationTest::Sdl2ApplicationTest(const Arguments& arguments): Platform::
        importer->openData(rs.getRaw("icon-64.tga")) &&
        (image = importer->image2D(0))) setWindowIcon(*image);
     else Warning{} << "Can't load the plugin / file, not setting window icon";
-    #else
-    Debug{} << "SDL too old, can't set window icon";
-    #endif
     #endif
 
     #ifndef CORRADE_TARGET_EMSCRIPTEN
     /* This shouldn't blow up */
     CORRADE_INTERNAL_ASSERT(!isKeyPressed(Key::Unknown) && !isKeyPressed(Key(0x7fffffff)));
     #endif
+}
+
+void Sdl2ApplicationTest::keyPressEvent(KeyEvent& event) {
+    Debug{} << "key press:" << event.key() << event.keyName() << "scancode:" << event.scanCode()
+        #ifndef CORRADE_TARGET_EMSCRIPTEN
+        << event.scanCodeName()
+        #endif
+        << event.modifiers()
+        #if !defined(CORRADE_TARGET_EMSCRIPTEN) || __EMSCRIPTEN_MAJOR__*10000 + __EMSCRIPTEN_MINOR__*100 + __EMSCRIPTEN_TINY__ >= 30125
+        << "converted:"
+        #ifndef CORRADE_TARGET_EMSCRIPTEN
+        << scanCodeToKey(event.scanCode())
+        #endif
+        << keyToScanCode(event.key())
+        #endif
+        ;
+
+    if(event.key() == Key::F1) {
+        Debug{} << "starting text input";
+        startTextInput();
+    } else if(event.key() == Key::F2) {
+        _redraw = !_redraw;
+        Debug{} << "redrawing" << (_redraw ? "enabled" : "disabled");
+        if(_redraw)
+            redraw();
+    }
+    #ifndef CORRADE_TARGET_EMSCRIPTEN
+    #ifdef MAGNUM_TARGET_GL
+    else if(event.key() == Key::V && !(event.modifiers() & ~(Modifier::CapsLock|Modifier::NumLock))) {
+        _vsync = !_vsync;
+        Debug{} << "vsync" << (_vsync? "on" : "off");
+        setSwapInterval(_vsync ? 1 : 0);
+    }
+    #endif
+    else if(event.key() == Key::C && (event.modifiers() & ~(Modifier::CapsLock|Modifier::NumLock)) == Modifier::Ctrl) {
+        Debug{} << "Setting clipboard contents";
+        setClipboardText("this text shouldn't have an exclamation at the end!!"_s.exceptSuffix(2));
+    } else if(event.key() == Key::V && (event.modifiers() & ~(Modifier::CapsLock|Modifier::NumLock)) == Modifier::Ctrl) {
+        Debug{} << "Clipboard contents:" << clipboardText();
+    }
+    #endif
+    else if(event.key() == Key::Esc) {
+        Debug{} << "stopping text input";
+        stopTextInput();
+    }
+    #ifndef CORRADE_TARGET_EMSCRIPTEN
+    else if(event.key() == Key::R) {
+        Debug{} << "toggling resizable" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Resizable) :
+            addWindowFlags(WindowFlag::Resizable);
+    } else if(event.key() == Key::F) {
+        Debug{} << (event.modifiers() >= Modifier::Ctrl ?
+            "toggling desktop fullscreen" : "toggling fullscreen")
+            << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(event.modifiers() >= Modifier::Ctrl ?
+                WindowFlag::FullscreenDesktop : WindowFlag::Fullscreen) :
+            addWindowFlags(event.modifiers() >= Modifier::Ctrl ?
+                WindowFlag::FullscreenDesktop : WindowFlag::Fullscreen);
+    } else if(event.key() == Key::B) {
+        Debug{} << "toggling borderless" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Borderless) :
+            addWindowFlags(WindowFlag::Borderless);
+    } else if(event.key() == Key::A) {
+        Debug{} << "toggling maximized" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Maximized) :
+            addWindowFlags(WindowFlag::Maximized);
+    } else if(event.key() == Key::I) {
+        Debug{} << "toggling minimized" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Minimized) :
+            addWindowFlags(WindowFlag::Minimized);
+    } else if(event.key() == Key::M) {
+        Debug{} << "toggling locked mouse" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::MouseLocked) :
+            addWindowFlags(WindowFlag::MouseLocked);
+    } else if(event.key() == Key::O) {
+        Debug{} << "toggling always on top" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::AlwaysOnTop) :
+            addWindowFlags(WindowFlag::AlwaysOnTop);
+    }
+    #endif
+    else if(event.key() == Key::T) {
+        Debug{} << "setting window title";
+        setWindowTitle("This is a UTF-8 Window Title™ and it should have no exclamation mark!!"_s.exceptSuffix(2));
+    }
+    #ifndef CORRADE_TARGET_EMSCRIPTEN
+    else if(event.key() == Key::S) {
+        Debug{} << "setting window size, which should trigger a viewport event";
+        setWindowSize(Vector2i{300, 200});
+    } else if(event.key() == Key::W) {
+        Debug{} << "setting max window size, which should trigger a viewport event";
+        setMaxWindowSize(Vector2i{700, 500});
+    }
+    #endif
+    else if(event.key() == Key::H) {
+        Debug{} << "toggling hand cursor";
+        setCursor(cursor() == Cursor::Arrow ? Cursor::Hand : Cursor::Arrow);
+    }
+    #ifndef CORRADE_TARGET_EMSCRIPTEN
+    else if(event.key() == Key::L) {
+        Debug{} << "toggling locked mouse";
+        setCursor(cursor() == Cursor::Arrow ? Cursor::HiddenLocked : Cursor::Arrow);
+    }
+    #else
+    else if(event.key() == Key::F) {
+        Debug{} << "toggling fullscreen";
+        setContainerCssClass((_fullscreen ^= true) ? "mn-fullsize" : "");
+    }
+    #endif
+    else if(event.key() == Key::X) {
+        Debug{} << "requesting an exit with code 5";
+        exit(5);
+    }
+
+    /* With EmscriptenApplication, this makes the event stop from propagating
+       further to the page (such as when pressing F1). Unfortunately on SDL
+       this doesn't as there's no API to actually mark events as accepted. */
+    event.setAccepted();
 }
 
 }}}}

@@ -47,7 +47,7 @@
 #endif
 
 #ifndef DOXYGEN_GENERATING_OUTPUT
-#define GLFW_INCLUDE_NONE
+#define GLFW_INCLUDE_NONE /* Don't drag in random GL headers */
 #endif
 #include <GLFW/glfw3.h>
 
@@ -153,8 +153,9 @@ If no other application header is included, this class is also aliased to
 @section Platform-GlfwApplication-dpi DPI awareness
 
 DPI awareness behavior is consistent with @ref Sdl2Application except that iOS
-or Emscripten specifics don't apply here. In addition, on Windows, GLFW is
-implicitly advertising DPI awareness, so the manifest file described in
+or Emscripten specifics don't apply here, and Wayland uses framebuffer DPI
+scaling always, regardless of GLFW version used. In addition, on Windows, GLFW
+is implicitly advertising DPI awareness, so the manifest file described in
 @ref platforms-windows-hidpi doesn't necessarily need to be supplied. See
 @ref Platform-Sdl2Application-dpi "Sdl2Application DPI awareness documentation"
 for more information.
@@ -191,11 +192,24 @@ class GlfwApplication {
 
         /* The damn thing cannot handle forward enum declarations */
         #ifndef DOXYGEN_GENERATING_OUTPUT
+        enum class WindowFlag: UnsignedShort;
         enum class Modifier: Int;
         enum class Key: Int;
         enum class PointerEventSource: UnsignedByte;
         enum class Pointer: UnsignedByte;
         #endif
+
+        /**
+         * @brief Window flags
+         * @m_since_latest
+         *
+         * @see @ref addWindowFlags(), @ref clearWindowFlags(),
+         *      @ref Configuration::setWindowFlags(),
+         *      @ref Configuration::addWindowFlags(),
+         *      @ref Configuration::clearWindowFlags(),
+         *      @ref Configuration::Flags
+         */
+        typedef Containers::EnumSet<WindowFlag> WindowFlags;
 
         /**
          * @brief Set of keyboard modifiers
@@ -239,12 +253,12 @@ class GlfwApplication {
         /**
          * @brief Construct without explicit GPU context configuration
          *
-         * If @ref Configuration::WindowFlag::Contextless is present or Magnum
-         * was not built with @ref MAGNUM_TARGET_GL, this creates a window
-         * without any GPU context attached, leaving that part on the user.
+         * If @ref Configuration::Flag::Contextless is present or Magnum was
+         * not built with @ref MAGNUM_TARGET_GL, this creates a window without
+         * any GPU context attached, leaving that part on the user.
          *
-         * If none of the flags is present and Magnum was built with
-         * @ref MAGNUM_TARGET_GL, this is equivalent to calling
+         * If @ref Configuration::Flag::Contextless is not present and Magnum
+         * was built with @ref MAGNUM_TARGET_GL, this is equivalent to calling
          * @ref GlfwApplication(const Arguments&, const Configuration&, const GLConfiguration&)
          * with default-constructed @ref GLConfiguration.
          *
@@ -401,12 +415,12 @@ class GlfwApplication {
         /**
          * @brief Create a window with given configuration
          *
-         * If @ref Configuration::WindowFlag::Contextless is present or Magnum
-         * was not built with @ref MAGNUM_TARGET_GL, this creates a window
-         * without any GPU context attached, leaving that part on the user.
+         * If @ref Configuration::Flag::Contextless is present or Magnum was
+         * not built with @ref MAGNUM_TARGET_GL, this creates a window without
+         * any GPU context attached, leaving that part on the user.
          *
-         * If none of the flags is present and Magnum was built with
-         * @ref MAGNUM_TARGET_GL, this is equivalent to calling
+         * If @ref Configuration::Flag::Contextless is not present and Magnum
+         * was built with @ref MAGNUM_TARGET_GL, this is equivalent to calling
          * @ref create(const Configuration&, const GLConfiguration&) with
          * default-constructed @ref GLConfiguration.
          *
@@ -503,7 +517,7 @@ class GlfwApplication {
          */
         void setMaxWindowSize(const Vector2i& size = {-1, -1});
 
-        #if defined(MAGNUM_TARGET_GL) || defined(DOXYGEN_GENERATING_OUTPUT)
+        #ifdef MAGNUM_TARGET_GL
         /**
          * @brief Framebuffer size
          *
@@ -582,9 +596,36 @@ class GlfwApplication {
         void setWindowIcon(const ImageView2D& image);
 
         /**
+         * @brief Add window flags
+         * @m_since_latest
+         *
+         * Note that on older GLFW versions toggling certain flags has no
+         * effect. See documentation of particular @ref WindowFlag values for
+         * details.
+         * @see @ref clearWindowFlags(), @ref Configuration::addWindowFlags()
+         */
+        void addWindowFlags(WindowFlags flags);
+
+        /**
+         * @brief Clear window flags
+         * @m_since_latest
+         *
+         * Note that on older GLFW versions toggling certain flags has no
+         * effect. See documentation of particular @ref WindowFlag values for
+         * details.
+         * @see @ref addWindowFlags(), @ref Configuration::clearWindowFlags()
+         */
+        void clearWindowFlags(WindowFlags flags);
+
+        #ifdef MAGNUM_TARGET_GL
+        /**
          * @brief Swap buffers
          *
          * Paints currently rendered framebuffer on screen.
+         *
+         * @note This function is available only if Magnum is compiled with
+         *      @ref MAGNUM_TARGET_GL enabled (done by default). See
+         *      @ref building-features for more information.
          */
         void swapBuffers() { glfwSwapBuffers(_window); }
 
@@ -598,8 +639,13 @@ class GlfwApplication {
          * @note Unlike SDL2, GLFW doesn't provide any getter for the swap
          *      interval, so this class doesn't provide any equivalent to
          *      @ref Sdl2Application::swapInterval().
+         *
+         * @note This function is available only if Magnum is compiled with
+         *      @ref MAGNUM_TARGET_GL enabled (done by default). See
+         *      @ref building-features for more information.
          */
         void setSwapInterval(Int interval);
+        #endif
 
         /**
          * @brief Set minimal loop period
@@ -1042,6 +1088,12 @@ class GlfwApplication {
         Vector2 dpiScalingInternal(Implementation::GlfwDpiScalingPolicy configurationDpiScalingPolicy, const Vector2& configurationDpiScaling, bool silentLog = false) const;
 
         void setupCallbacks();
+        GLFWmonitor* setupWindowFlags(WindowFlags flags, Vector2i& windowSizeToUse);
+        void toggleWindowFlags(
+            #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 303
+            const char* messagePrefix,
+            #endif
+            WindowFlags flags, bool enabled);
 
         /* Corresponds to size of the Cursor enum, the two Hidden cursors are
            handled differently */
@@ -1067,6 +1119,10 @@ class GlfwApplication {
         Vector2 _dpiScaling;
 
         GLFWwindow* _window{nullptr};
+        /* Size of the window to restore when returning back from fullscreen.
+           Is updated from addWindowFlags() and potentially in tryCreate() if
+           WindowFlag::Fullscreen is enabled for window creation already */
+        Vector2i _windowSizeToRestore, _windowPositionToRestore;
         /* Not using Nanoseconds as that would require including Time.h */
         UnsignedInt _minimalLoopPeriodNanoseconds{};
         Flags _flags;
@@ -1081,6 +1137,59 @@ class GlfwApplication {
         Vector2i _minWindowSize, _maxWindowSize;
         Vector2 _previousMouseMovePosition{Constants::nan()};
 };
+
+/**
+@brief Window flag
+@m_since_latest
+
+@see @ref WindowFlags, @ref addWindowFlags(), @ref clearWindowFlags(),
+    @ref Configuration::setWindowFlags(), @ref Configuration::addWindowFlags(),
+    @ref Configuration::clearWindowFlags(), @ref Configuration::Flags
+*/
+enum class GlfwApplication::WindowFlag: UnsignedShort {
+    Fullscreen = 1 << 0,        /**< Fullscreen window */
+
+    /**
+     * Fullscreen window at the current desktop resolution
+     *
+     * @todo 1 << 7 and 1 << 8 reserved for deprecated
+     *      Configuration::WindowFlag values, renumber once the enum is gone
+     */
+    FullscreenDesktop = Fullscreen|(1 << 9),
+
+    /**
+     * No window decoration
+     *
+     * @note Toggling this flag with @ref addWindowFlags() and
+     *      @ref clearWindowFlags() is not supported in GLFW versions before
+     *      3.3, there the flag can only be used for window creation.
+     */
+    Borderless = 1 << 1,
+
+    /**
+     * Resizable window
+     *
+     * @note Toggling this flag with @ref addWindowFlags() and
+     *      @ref clearWindowFlags() is not supported in GLFW versions before
+     *      3.3, there the flag can only be used for window creation.
+     */
+    Resizable = 1 << 2,
+
+    Hidden = 1 << 3,        /**< Hidden window */
+    Maximized = 1 << 4,     /**< Maximized window */
+    Minimized = 1 << 5,     /**< Minimized window */
+
+    /**
+     * Always on top
+     *
+     * @note Toggling this flag with @ref addWindowFlags() and
+     *      @ref clearWindowFlags() is not supported in GLFW versions before
+     *      3.3, there the flag can only be used for window creation.
+     */
+    AlwaysOnTop = 1 << 6,
+};
+
+CORRADE_ENUMSET_OPERATORS(GlfwApplication::WindowFlags)
 
 /**
 @brief Keyboard modifier
@@ -1464,7 +1573,8 @@ class GlfwApplication::GLConfiguration: public GL::Context::Configuration {
          * Includes also everything from @ref GL::Context::Configuration::Flag
          * except for @relativeref{GL::Context::Configuration,Flag::Windowless},
          * which is not meant to be enabled for windowed apps.
-         * @see @ref Flags, @ref setFlags(), @ref GL::Context::Flag
+         * @see @ref Flags, @ref setFlags(), @ref addFlags(),
+         *      @ref clearFlags(), @ref GL::Context::Flag
          */
         enum class Flag: UnsignedLong {
             #ifndef MAGNUM_TARGET_GLES
@@ -1525,12 +1635,12 @@ class GlfwApplication::GLConfiguration: public GL::Context::Configuration {
         /**
          * @brief Context flags
          *
-         * @see @ref setFlags(), @ref GL::Context::Flags
+         * @see @ref setFlags(), @ref addFlags(), @ref clearFlags(),
+         *      @ref GL::Context::Flags
          */
         typedef Containers::EnumSet<Flag> Flags;
 
         explicit GLConfiguration();
-        ~GLConfiguration();
 
         /** @brief Context flags */
         Flags flags() const {
@@ -1686,7 +1796,8 @@ namespace Implementation {
     enum class GlfwDpiScalingPolicy: UnsignedByte {
         /* Using 0 for an "unset" value */
 
-        #ifdef CORRADE_TARGET_APPLE
+        /* Framebuffer is used only with Wayland on Unix */
+        #if defined(CORRADE_TARGET_APPLE) || defined(CORRADE_TARGET_UNIX)
         Framebuffer = 1,
         #endif
 
@@ -1697,9 +1808,12 @@ namespace Implementation {
         #endif
 
         Default
+            /* On non-Apple Unix it's not aliased to anything as it can be
+               either Virtual or Framebuffer depending on whether we're running
+               on Wayland */
             #ifdef CORRADE_TARGET_APPLE
             = Framebuffer
-            #else
+            #elif !defined(CORRADE_TARGET_UNIX)
             = Virtual
             #endif
     };
@@ -1713,52 +1827,13 @@ namespace Implementation {
 class GlfwApplication::Configuration {
     public:
         /**
-         * @brief Window flag
+         * @brief Flag
+         * @m_since_latest
          *
-         * @see @ref WindowFlags, @ref setWindowFlags()
+         * @see @ref Flags, @ref setFlags(), @ref addFlags(),
+         *      @ref clearFlags(), @ref WindowFlag
          */
-        enum class WindowFlag: UnsignedShort {
-            Fullscreen = 1 << 0,   /**< Fullscreen window */
-
-            /**
-             * No window decoration
-             * @m_since{2020,06}
-             */
-            Borderless = 1 << 1,
-
-            Resizable = 1 << 2,    /**< Resizable window */
-            Hidden = 1 << 3,       /**< Hidden window */
-            Maximized = 1 << 4,    /**< Maximized window */
-
-            Minimized = 1 << 5,    /**< Minimized window */
-
-            /**
-             * Always on top
-             * @m_since{2020,06}
-             */
-            AlwaysOnTop = 1 << 6,
-
-            #ifdef MAGNUM_BUILD_DEPRECATED
-            /**
-             * Always on top
-             * @m_deprecated_since{2020,06} Use @ref WindowFlag::AlwaysOnTop instead.
-             */
-            Floating CORRADE_DEPRECATED_ENUM("use AlwaysOnTop instead") = AlwaysOnTop,
-            #endif
-
-            /**
-             * Automatically iconify (minimize) if fullscreen window loses
-             * input focus
-             */
-            AutoIconify = 1 << 7,
-
-            /**
-             * Window has input focus
-             *
-             * @todo there's also GLFW_FOCUS_ON_SHOW, what's the difference?
-             */
-            Focused = 1 << 8,
-
+        enum class Flag: UnsignedShort {
             /**
              * Do not create any GPU context. Use together with
              * @ref GlfwApplication(const Arguments&, const Configuration&),
@@ -1769,15 +1844,120 @@ class GlfwApplication::Configuration {
              * @ref create(const Configuration&, const GLConfiguration&) or
              * @ref tryCreate(const Configuration&, const GLConfiguration&).
              */
-            Contextless = 1 << 9
+            /** @todo renumber and make the enum type smaller once the
+                deprecated WindowFlag is gone, now kept the same just so they
+                can be easily aliased */
+            Contextless = 1 << 9,
         };
 
         /**
-         * @brief Window flags
+         * @brief Flags
+         * @m_since_latest
          *
-         * @see @ref setWindowFlags()
+         * @see @ref setFlags(), @ref addFlags(), @ref clearFlags(),
+         *      @ref WindowFlags
          */
-        typedef Containers::EnumSet<WindowFlag> WindowFlags;
+        typedef Containers::EnumSet<Flag> Flags;
+
+        #ifdef MAGNUM_BUILD_DEPRECATED
+        /**
+         * @brief @copybrief GlfwApplication::WindowFlag
+         * @m_deprecated_since_latest Use @ref GlfwApplication::WindowFlag, or
+         *      @ref Flag with @ref setFlags(), @ref addFlags() and
+         *      @ref clearFlags() instead.
+         */
+        enum class CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag, or Flag with setFlags(), addFlags() and clearFlags() instead") WindowFlag: UnsignedShort {
+            /**
+             * @copydoc GlfwApplication::WindowFlag::Fullscreen
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::Fullscreen instead.
+             */
+            Fullscreen CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::Fullscreen instead") = UnsignedShort(GlfwApplication::WindowFlag::Fullscreen),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::Borderless
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::Borderless instead.
+             */
+            Borderless CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::Borderless instead") = UnsignedShort(GlfwApplication::WindowFlag::Borderless),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::Resizable
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::Resizable instead.
+             */
+            Resizable CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::Resizable instead") = UnsignedShort(GlfwApplication::WindowFlag::Resizable),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::Hidden
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::Hidden instead.
+             */
+            Hidden CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::Hidden instead") = UnsignedShort(GlfwApplication::WindowFlag::Hidden),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::Maximized
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::Maximized instead.
+             */
+            Maximized CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::Maximized instead") = UnsignedShort(GlfwApplication::WindowFlag::Maximized),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::Minimized
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::Minimized instead.
+             */
+            Minimized CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::Minimized instead") = UnsignedShort(GlfwApplication::WindowFlag::Minimized),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::AlwaysOnTop
+             * @m_deprecated_since_latest Use
+             *      @ref GlfwApplication::WindowFlag::AlwaysOnTop instead.
+             */
+            AlwaysOnTop CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::AlwaysOnTop instead") = UnsignedShort(GlfwApplication::WindowFlag::AlwaysOnTop),
+
+            /**
+             * @copydoc GlfwApplication::WindowFlag::AlwaysOnTop
+             * @m_deprecated_since{2020,06} Use
+             *      @ref GlfwApplication::WindowFlag::AlwaysOnTop instead.
+             */
+            Floating CORRADE_DEPRECATED_ENUM("use GlfwApplication::WindowFlag::AlwaysOnTop instead") = UnsignedShort(GlfwApplication::WindowFlag::AlwaysOnTop),
+
+            /**
+             * Automatically iconify (minimize) if fullscreen window loses
+             * input focus.
+             * @m_deprecated_since_latest Fullscreen windows are minimized on
+             *      focus loss implicitly so setting this flag has no effect,
+             *      and the flag does nothing for regular windows.
+             */
+            AutoIconify CORRADE_DEPRECATED_ENUM("setting this flag has no effect") = 1 << 7,
+
+            /**
+             * Window has input focus
+             * @m_deprecated_since_latest Windows are focused upon creation
+             *      implicitly so setting this flag has no effect.
+             */
+            Focused CORRADE_DEPRECATED_ENUM("setting this flag has no effect") = 1 << 8,
+
+            /**
+             * @copydoc Flag::Contextless
+             * @m_deprecated_since_latest Use @ref Flag::Contextless with
+             *      @ref setFlags(), @ref addFlags() or @ref clearFlags()
+             *      instead.
+             */
+            Contextless CORRADE_DEPRECATED_ENUM("use Flag::Contextless with setFlags(), addFlags() or clearFlags() instead") = UnsignedShort(Flag::Contextless),
+        };
+
+        /**
+         * @brief @copybrief GlfwApplication::WindowFlags
+         * @m_deprecated_since_latest Use @ref GlfwApplication::WindowFlags, or
+         *      @ref Flags with @ref setFlags(), @ref addFlags() and
+         *      @ref clearFlags() instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH
+        typedef CORRADE_DEPRECATED("use GlfwApplication::WindowFlags, or Flags with setFlags(), addFlags() and clearFlags() instead") Containers::EnumSet<WindowFlag> WindowFlags;
+        CORRADE_IGNORE_DEPRECATED_POP
+        #endif
 
         /**
          * @brief DPI scaling policy
@@ -1792,8 +1972,11 @@ class GlfwApplication::Configuration {
             /**
              * Framebuffer DPI scaling. The window will have the same size as
              * requested, but the framebuffer size will be different. Supported
-             * only on macOS and iOS and is also the only supported value
-             * there.
+             * on Unix when running under Wayland, and on macOS, on both it's
+             * also the only supported value.
+             *
+             * Equivalent to `--magnum-dpi-scaling framebuffer` passed on
+             * command-line.
              */
             Framebuffer,
 
@@ -1801,8 +1984,8 @@ class GlfwApplication::Configuration {
              * Virtual DPI scaling. Scales the window based on UI scaling
              * setting in the system. Falls back to
              * @ref DpiScalingPolicy::Physical on platforms that don't support
-             * it. Supported only on desktop platforms (except macOS) and it's
-             * the default there.
+             * it. Supported on Unix when running under X11 and on Windows, on
+             * both it's the default there.
              *
              * Equivalent to `--magnum-dpi-scaling virtual` passed on
              * command-line.
@@ -1813,10 +1996,7 @@ class GlfwApplication::Configuration {
              * Physical DPI scaling. Takes the requested window size as a
              * physical size that a window would have on platform's default DPI
              * and scales it to have the same size on given display physical
-             * DPI. On platforms that don't have a concept of a window it
-             * causes the framebuffer to match screen pixels 1:1 without any
-             * scaling. Supported on desktop platforms except macOS and on
-             * mobile and web. Default on mobile and web.
+             * DPI. Supported on Unix when running under X11 and on Windows.
              *
              * Equivalent to `--magnum-dpi-scaling physical` passed on
              * command-line.
@@ -1824,10 +2004,13 @@ class GlfwApplication::Configuration {
             Physical,
 
             /**
-             * Default policy for current platform. Alias to one of
-             * @ref DpiScalingPolicy::Framebuffer, @ref DpiScalingPolicy::Virtual
-             * or @ref DpiScalingPolicy::Physical depending on platform. See
-             * @ref Platform-Sdl2Application-dpi for details.
+             * Default policy for current platform. Resolves to either
+             * @ref DpiScalingPolicy::Framebuffer or
+             * @ref DpiScalingPolicy::Virtual depending on platform and window
+             * system used. See @ref Platform-GlfwApplication-dpi for details.
+             *
+             * Equivalent to `--magnum-dpi-scaling default` passed on
+             * command-line.
              */
             Default
         };
@@ -1954,34 +2137,97 @@ class GlfwApplication::Configuration {
             return *this;
         }
 
-        /** @brief Window flags */
-        WindowFlags windowFlags() const {
+        /**
+         * @brief Flags
+         * @m_since_latest
+         *
+         * @see @ref windowFlags()
+         */
+        Flags flags() const {
+            return _flags;
+        }
+
+        /**
+         * @brief Set flags
+         * @return Reference to self (for method chaining)
+         * @m_since_latest
+         *
+         * Default are none. To avoid clearing default flags by accident,
+         * prefer to use @ref addFlags() and @ref clearFlags() instead.
+         * @see @ref setWindowFlags()
+         */
+        Configuration& setFlags(Flags flags) {
+            _flags = flags;
+            return *this;
+        }
+
+        /**
+         * @brief Add flags
+         * @return Reference to self (for method chaining)
+         * @m_since_latest
+         *
+         * Unlike @ref setFlags(), ORs the flags with existing instead of
+         * replacing them. Useful for preserving the defaults.
+         * @see @ref clearFlags(), @ref addWindowFlags()
+         */
+        Configuration& addFlags(Flags flags) {
+            _flags |= flags;
+            return *this;
+        }
+
+        /**
+         * @brief Clear flags
+         * @return Reference to self (for method chaining)
+         * @m_since_latest
+         *
+         * Unlike @ref setFlags(), ANDs the inverse of @p flags with existing
+         * instead of replacing them. Useful for removing default flags.
+         * @see @ref addFlags(), @ref clearWindowFlags()
+         */
+        Configuration& clearFlags(Flags flags) {
+            _flags &= ~flags;
+            return *this;
+        }
+
+        /** @todo drop all GlfwApplication:: prefixes for WindowFlags below
+            once the deprecated enum is gone */
+
+        /**
+         * @brief Window flags
+         *
+         * @see @ref flags()
+         */
+        GlfwApplication::WindowFlags windowFlags() const {
             return _windowFlags;
         }
 
         /**
          * @brief Set window flags
          * @return  Reference to self (for method chaining)
+         * @m_since_latest
          *
-         * Default is @ref WindowFlag::Focused. To avoid clearing default flags
-         * by accident, prefer to use @ref addWindowFlags() and
-         * @ref clearWindowFlags() instead.
+         * Default are none. To avoid clearing default flags by accident,
+         * prefer to use @ref addWindowFlags() and @ref clearWindowFlags()
+         * instead.
+         * @see @ref setFlags(), @ref GlfwApplication::addWindowFlags(),
+         *      @ref GlfwApplication::clearWindowFlags()
          */
-        Configuration& setWindowFlags(WindowFlags windowFlags) {
-            _windowFlags = windowFlags;
+        Configuration& setWindowFlags(GlfwApplication::WindowFlags flags) {
+            _windowFlags = flags;
             return *this;
         }
 
         /**
          * @brief Add window flags
          * @return Reference to self (for method chaining)
-         * @m_since{2020,06}
+         * @m_since_latest
          *
          * Unlike @ref setWindowFlags(), ORs the flags with existing instead of
          * replacing them. Useful for preserving the defaults.
-         * @see @ref clearWindowFlags()
+         * @see @ref clearWindowFlags(), @ref addFlags(),
+         *      @ref GlfwApplication::addWindowFlags()
          */
-        Configuration& addWindowFlags(WindowFlags flags) {
+        Configuration& addWindowFlags(GlfwApplication::WindowFlags flags) {
             _windowFlags |= flags;
             return *this;
         }
@@ -1989,19 +2235,80 @@ class GlfwApplication::Configuration {
         /**
          * @brief Clear window flags
          * @return Reference to self (for method chaining)
-         * @m_since{2020,06}
+         * @m_since_latest
          *
          * Unlike @ref setWindowFlags(), ANDs the inverse of @p flags with
          * existing instead of replacing them. Useful for removing default
          * flags.
-         * @see @ref addWindowFlags()
+         * @see @ref addWindowFlags(), @ref clearFlags(),
+         *      @ref GlfwApplication::clearWindowFlags()
          */
-        Configuration& clearWindowFlags(WindowFlags flags) {
+        Configuration& clearWindowFlags(GlfwApplication::WindowFlags flags) {
             _windowFlags &= ~flags;
             return *this;
         }
 
         #ifdef MAGNUM_BUILD_DEPRECATED
+        /**
+         * @brief @copybrief setWindowFlags(GlfwApplication::WindowFlags)
+         * @m_deprecated_since_latest Use
+         *      @ref setWindowFlags(GlfwApplication::WindowFlags) instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH /* MSVC warns for WindowFlags use */
+        CORRADE_DEPRECATED("use setWindowFlags(GlfwApplication::WindowFlags) or setFlags() instead") Configuration& setWindowFlags(WindowFlags flags) {
+            /* If a deprecated flag is used overwrite the _flags as well. If a
+               deprecated flag isn't used, don't touch _flags at all to not
+               have inconsistent behavior on non-deprecated builds. */
+            if(const Flags deprecatedFlags = Flags(UnsignedShort(flags)) & Flag::Contextless) {
+                _flags = deprecatedFlags;
+                /* Clear from the flags as the windowFlags() return type
+                   doesn't have the deprecated values anymore and thus it makes
+                   no sense to keep them there as well */
+                flags &= ~WindowFlags(UnsignedShort(deprecatedFlags));
+            }
+            _windowFlags = GlfwApplication::WindowFlags(UnsignedShort(flags));
+            return *this;
+        }
+        CORRADE_IGNORE_DEPRECATED_POP
+
+        /**
+         * @brief @copybrief addWindowFlags(GlfwApplication::WindowFlags)
+         * @m_deprecated_since_latest Use
+         *      @ref addWindowFlags(GlfwApplication::WindowFlags) instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH /* MSVC warns for WindowFlags use */
+        CORRADE_DEPRECATED("use addWindowFlags(GlfwApplication::WindowFlags) or addFlags() instead") Configuration& addWindowFlags(WindowFlags flags) {
+            /* Add to the _flags as wellk. Compared to setWindowFlags() this
+               won't have different behavior on non-deprecated builds so an
+               if() isn't needed. */
+            _flags |= Flags(UnsignedShort(flags)) & Flag::Contextless;
+            /* Skip the deprecated flags as the windowFlags() return type
+               doesn't have the deprecated values anymore and thus it makes no
+               sense to keep them there as well */
+            _windowFlags |= GlfwApplication::WindowFlags(UnsignedShort(flags) & ~UnsignedShort(Flag::Contextless));
+            return *this;
+        }
+        CORRADE_IGNORE_DEPRECATED_POP
+
+        /**
+         * @brief @copybrief clearWindowFlags(GlfwApplication::WindowFlags)
+         * @m_deprecated_since_latest Use
+         *      @ref clearWindowFlags(GlfwApplication::WindowFlags) instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH /* MSVC warns for WindowFlags use */
+        CORRADE_DEPRECATED("use clearWindowFlags(GlfwApplication::WindowFlags) or clearFlags() instead") Configuration& clearWindowFlags(WindowFlags flags) {
+            /* Clear from the _flags as well. Compared to setWindowFlags() this
+               won't have different behavior on non-deprecated builds so an
+               if() isn't needed. */
+            _flags &= ~(Flags(UnsignedShort(flags)) & Flag::Contextless);
+            /* Compared to setWindowFlags() / addWindowFlags() above no special
+               handling is needed as the deprecated flags shouldn't be in
+               _windowFlags in the first place */
+            _windowFlags &= ~GlfwApplication::WindowFlags(UnsignedShort(flags));
+            return *this;
+        }
+        CORRADE_IGNORE_DEPRECATED_POP
+
         /**
          * @brief Cursor mode
          *
@@ -2034,7 +2341,8 @@ class GlfwApplication::Configuration {
     private:
         Containers::String _title;
         Vector2i _size;
-        WindowFlags _windowFlags;
+        Flags _flags;
+        GlfwApplication::WindowFlags _windowFlags;
         DpiScalingPolicy _dpiScalingPolicy;
         Vector2 _dpiScaling;
         #ifdef MAGNUM_BUILD_DEPRECATED
@@ -2044,7 +2352,12 @@ class GlfwApplication::Configuration {
         #endif
 };
 
+CORRADE_ENUMSET_OPERATORS(GlfwApplication::Configuration::Flags)
+#ifdef MAGNUM_BUILD_DEPRECATED
+CORRADE_IGNORE_DEPRECATED_PUSH
 CORRADE_ENUMSET_OPERATORS(GlfwApplication::Configuration::WindowFlags)
+CORRADE_IGNORE_DEPRECATED_POP
+#endif
 
 /**
 @brief Exit event
@@ -2114,7 +2427,7 @@ class GlfwApplication::ViewportEvent {
          */
         Vector2i windowSize() const { return _windowSize; }
 
-        #if defined(MAGNUM_TARGET_GL) || defined(DOXYGEN_GENERATING_OUTPUT)
+        #ifdef MAGNUM_TARGET_GL
         /**
          * @brief Framebuffer size
          *

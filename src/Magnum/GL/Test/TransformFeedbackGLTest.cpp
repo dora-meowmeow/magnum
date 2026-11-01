@@ -39,6 +39,7 @@
 #include "Magnum/GL/Extensions.h"
 #include "Magnum/GL/Framebuffer.h"
 #include "Magnum/GL/Mesh.h"
+#include "Magnum/GL/MeshView.h"
 #include "Magnum/GL/OpenGLTester.h"
 #include "Magnum/GL/PixelFormat.h"
 #include "Magnum/GL/PrimitiveQuery.h"
@@ -115,11 +116,16 @@ const struct {
     UnsignedInt countStream0;
     UnsignedInt countStreamN;
     UnsignedInt countDraw;
+    bool meshView;
 } DrawData[]{
-    {"basic", 0, 1, 6, 6, 6},
-    {"instanced", 0, 5, 6, 6, 30},
-    {"stream", 1, 1, 0, 6, 6},
-    {"streamInstanced", 1, 5, 0, 6, 30}
+    {"basic", 0, 1, 6, 6, 6, false},
+    {"basic, mesh view", 0, 1, 6, 6, 6, true},
+    {"instanced", 0, 5, 6, 6, 30, false},
+    {"instanced, mesh view", 0, 5, 6, 6, 30, true},
+    {"stream", 1, 1, 0, 6, 6, false},
+    {"stream, mesh view", 1, 1, 0, 6, 6, true},
+    {"streamInstanced", 1, 5, 0, 6, 30, false},
+    {"streamInstanced, mesh view", 1, 5, 0, 6, 30, true}
 };
 #endif
 
@@ -663,14 +669,15 @@ void TransformFeedbackGLTest::interleaved() {
 }
 
 void TransformFeedbackGLTest::draw() {
-    setTestCaseDescription(DrawData[testCaseInstanceId()].name);
+    auto&& data = DrawData[testCaseInstanceId()];
+    setTestCaseDescription(data.name);
 
     /* ARB_transform_feedback2 needed as base, other optional */
     if(!Context::current().isExtensionSupported<Extensions::ARB::transform_feedback2>())
         CORRADE_SKIP(Extensions::ARB::transform_feedback2::string() << "is not supported.");
-    if(DrawData[testCaseInstanceId()].stream && (!Context::current().isExtensionSupported<Extensions::ARB::transform_feedback3>() || TransformFeedback::maxVertexStreams() < 2))
+    if(data.stream && (!Context::current().isExtensionSupported<Extensions::ARB::transform_feedback3>() || TransformFeedback::maxVertexStreams() < 2))
         CORRADE_SKIP(Extensions::ARB::transform_feedback3::string() << "is not supported well enough.");
-    if(DrawData[testCaseInstanceId()].instances && !Context::current().isExtensionSupported<Extensions::ARB::transform_feedback_instanced>())
+    if(data.instances && !Context::current().isExtensionSupported<Extensions::ARB::transform_feedback_instanced>())
         CORRADE_SKIP(Extensions::ARB::transform_feedback_instanced::string() << "is not supported.");
 
     /* Bind some FB to avoid errors on contexts w/o default FB */
@@ -715,7 +722,7 @@ void TransformFeedbackGLTest::draw() {
             setTransformFeedbackOutputs({"geomOutput"}, TransformFeedbackBufferMode::SeparateAttributes);
             CORRADE_INTERNAL_ASSERT_OUTPUT(link());
         }
-    } xfbShader{DrawData[testCaseInstanceId()].stream};
+    } xfbShader{data.stream};
 
     Buffer outputBuffer;
     outputBuffer.setData({nullptr, 32*sizeof(Vector2)}, BufferUsage::StaticDraw);
@@ -733,8 +740,8 @@ void TransformFeedbackGLTest::draw() {
         queryStreamN{PrimitiveQuery::Target::TransformFeedbackPrimitivesWritten};
 
     queryStream0.begin();
-    if(DrawData[testCaseInstanceId()].stream)
-        queryStreamN.begin(DrawData[testCaseInstanceId()].stream);
+    if(data.stream)
+        queryStreamN.begin(data.stream);
 
     Renderer::enable(Renderer::Feature::RasterizerDiscard);
     feedback.begin(xfbShader, TransformFeedback::PrimitiveMode::Points);
@@ -742,15 +749,15 @@ void TransformFeedbackGLTest::draw() {
     feedback.end();
     Renderer::disable(Renderer::Feature::RasterizerDiscard);
 
-    if(DrawData[testCaseInstanceId()].stream)
+    if(data.stream)
         queryStreamN.end();
     queryStream0.end();
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 
-    CORRADE_COMPARE(queryStream0.result<UnsignedInt>(), DrawData[testCaseInstanceId()].countStream0);
-    if(DrawData[testCaseInstanceId()].stream)
-        CORRADE_COMPARE(queryStreamN.result<UnsignedInt>(), DrawData[testCaseInstanceId()].countStreamN);
+    CORRADE_COMPARE(queryStream0.result<UnsignedInt>(), data.countStream0);
+    if(data.stream)
+        CORRADE_COMPARE(queryStreamN.result<UnsignedInt>(), data.countStreamN);
 
     struct DrawShader: AbstractShaderProgram {
         typedef Attribute<0, Vector2> Input;
@@ -783,17 +790,24 @@ void TransformFeedbackGLTest::draw() {
 
     Mesh outputMesh;
     outputMesh.setPrimitive(MeshPrimitive::Points)
-        .setInstanceCount(DrawData[testCaseInstanceId()].instances)
         .addVertexBuffer(outputBuffer, 0, DrawShader::Input{});
+    MeshView outputMeshView{outputMesh};
+    if(data.meshView)
+        outputMeshView.setInstanceCount(data.instances);
+    else
+        outputMesh.setInstanceCount(data.instances);
 
     PrimitiveQuery q{PrimitiveQuery::Target::PrimitivesGenerated};
     q.begin();
-    drawShader.drawTransformFeedback(outputMesh, feedback, DrawData[testCaseInstanceId()].stream);
+    if(data.meshView)
+        drawShader.drawTransformFeedback(outputMeshView, feedback, data.stream);
+    else
+        drawShader.drawTransformFeedback(outputMesh, feedback, data.stream);
     q.end();
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 
-    CORRADE_COMPARE(q.result<UnsignedInt>(), DrawData[testCaseInstanceId()].countDraw);
+    CORRADE_COMPARE(q.result<UnsignedInt>(), data.countDraw);
     CORRADE_COMPARE(Containers::arrayCast<UnsignedByte>(fb.read({{}, Vector2i{1}}, {PixelFormat::RGBA, PixelType::UnsignedByte}).data())[0], 153);
 
     MAGNUM_VERIFY_NO_GL_ERROR();

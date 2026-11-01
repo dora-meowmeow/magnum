@@ -286,8 +286,8 @@ struct EmscriptenApplicationTest: Platform::Application {
 
     void drawEvent() override {
         Debug() << "draw event";
-        /* If the app was initialized contextless, there's no GL context */
-        if(GL::Context::hasCurrent()) {
+        #ifdef MAGNUM_TARGET_GL
+        if(!_contextless) {
             #ifdef CUSTOM_CLEAR_COLOR
             GL::Renderer::setClearColor(CUSTOM_CLEAR_COLOR);
             #endif
@@ -295,6 +295,7 @@ struct EmscriptenApplicationTest: Platform::Application {
 
             swapBuffers();
         }
+        #endif
 
         if(_redraw)
             redraw();
@@ -408,6 +409,9 @@ struct EmscriptenApplicationTest: Platform::Application {
     }
 
     private:
+        #ifdef MAGNUM_TARGET_GL
+        bool _contextless;
+        #endif
         bool _fullscreen = false;
         bool _redraw = false;
 };
@@ -419,6 +423,7 @@ EmscriptenApplicationTest::EmscriptenApplicationTest(const Arguments& arguments)
         .addBooleanOption("exit-immediately").setHelp("exit-immediately", "exit the application immediately from the constructor, to test that the app doesn't run any event handlers after")
         .addBooleanOption("quiet").setHelp("quiet", "like --magnum-log quiet, but specified via a Context::Configuration instead")
         .addBooleanOption("contextless").setHelp("contextless", "initialize without a WebGL context")
+        .addBooleanOption("always-request-animation-frame").setHelp("always-request-animation-frame", "always use window.requestAnimationFrame()")
         .parse(arguments.argc, arguments.argv);
 
     /* Useful for bisecting Emscripten regressions, because they happen WAY TOO
@@ -434,13 +439,20 @@ EmscriptenApplicationTest::EmscriptenApplicationTest(const Arguments& arguments)
     }
 
     Configuration conf;
-    conf.setWindowFlags(Configuration::WindowFlag::Resizable);
+    conf.addWindowFlags(WindowFlag::Resizable);
     if(!args.value("dpi-scaling").empty())
         conf.setSize({640, 480}, args.value<Vector2>("dpi-scaling"));
-    if(args.isSet("contextless")) {
-        conf.addWindowFlags(Configuration::WindowFlag::Contextless);
+    if(args.isSet("always-request-animation-frame"))
+        conf.addFlags(Configuration::Flag::AlwaysRequestAnimationFrame);
+    #ifdef MAGNUM_TARGET_GL
+    if((_contextless = args.isSet("contextless")))
+    #endif
+    {
+        conf.addFlags(Configuration::Flag::Contextless);
         create(conf);
-    } else {
+    }
+    #ifdef MAGNUM_TARGET_GL
+    else {
         GLConfiguration glConf;
         if(args.isSet("quiet"))
             glConf.addFlags(GLConfiguration::Flag::QuietLog);
@@ -449,6 +461,7 @@ EmscriptenApplicationTest::EmscriptenApplicationTest(const Arguments& arguments)
         /* No GPU validation on WebGL */
         create(conf, glConf);
     }
+    #endif
 
     Debug{} << "window size" << windowSize()
         #ifdef MAGNUM_TARGET_GL
@@ -456,11 +469,13 @@ EmscriptenApplicationTest::EmscriptenApplicationTest(const Arguments& arguments)
         #endif
         << dpiScaling() << devicePixelRatio();
 
-    if(!args.isSet("contextless")) {
+    #ifdef MAGNUM_TARGET_GL
+    if(!_contextless) {
         /* This uses a VAO on WebGL 1, so it will crash in case GL flags are
            missing EnableExtensionsByDefault */
         GL::Mesh mesh;
     }
+    #endif
 
     /* Uncomment this to verify destructor behavior, such as in case of
        Contextless enabled. Note that it might then blow up elsewhere due to

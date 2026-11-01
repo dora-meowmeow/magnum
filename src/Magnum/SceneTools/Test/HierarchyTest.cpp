@@ -29,16 +29,25 @@
 #include <Corrade/Containers/Triple.h>
 #include <Corrade/TestSuite/Tester.h>
 #include <Corrade/TestSuite/Compare/Container.h>
+#include <Corrade/TestSuite/Compare/String.h>
+#include <Corrade/Utility/Algorithms.h>
+#include <Corrade/Utility/Format.h>
+#include <Corrade/Utility/Memory.h>
 
 #include "Magnum/Math/Matrix3.h"
 #include "Magnum/Math/Matrix4.h"
 #include "Magnum/SceneTools/Hierarchy.h"
+#include "Magnum/SceneTools/Test/cpuVariantHelpers.h"
+#include "Magnum/SceneTools/Test/HierarchyTest.h"
 #include "Magnum/Trade/SceneData.h"
 
 namespace Magnum { namespace SceneTools { namespace Test { namespace {
 
 struct HierarchyTest: TestSuite::Tester {
     explicit HierarchyTest();
+
+    void captureImplementations();
+    void restoreImplementations();
 
     void parentsBreadthFirstChildrenDepthFirst();
     void parentsBreadthFirstChildrenDepthFirstSingleBranch();
@@ -54,6 +63,12 @@ struct HierarchyTest: TestSuite::Tester {
     void parentsBreadthFirstChildrenDepthFirstCyclicDeep();
     void parentsBreadthFirstChildrenDepthFirstSparseAndCyclic();
 
+    void absoluteTransformations3D();
+    void absoluteTransformations3DStrided();
+    void absoluteTransformations3DInPlace();
+    void absoluteTransformationsInvalid();
+    void absoluteTransformationsInvalidParents();
+
     void absoluteFieldTransformations2D();
     void absoluteFieldTransformations3D();
 
@@ -64,9 +79,69 @@ struct HierarchyTest: TestSuite::Tester {
     void absoluteFieldTransformationsInto2D();
     void absoluteFieldTransformationsInto3D();
     void absoluteFieldTransformationsIntoInvalidSize();
+
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    decltype(Implementation::absoluteTransformations3D) _absoluteTransformations3DImplementation;
+    #endif
 };
 
 using namespace Math::Literals;
+
+const struct {
+    Cpu::Features features;
+    const char* extra;
+    /* Cases that define a function pointer are not present in the library, see
+       the pointed-to function documentation for more info */
+    void(*function)(std::size_t, const char*, std::ptrdiff_t, const char*, const std::ptrdiff_t, char*, std::ptrdiff_t);
+} AbsoluteTransformationsData[]{
+    /* Order of the tests same as in HierarchyBenchmark for consistency */
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    {Cpu::Scalar, "affine transform",
+        absoluteTransformations3DScalarAffine},
+    #endif
+    {Cpu::Scalar, nullptr, nullptr},
+    #ifdef CORRADE_ENABLE_SSE2
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    {Cpu::Sse2, "no shuffle, no cache, no affine transform",
+        absoluteTransformations3DSse2NoShuffleNoCacheNoAffine},
+    {Cpu::Sse2, "two-register shuffle, no cache, no affine transform",
+        absoluteTransformations3DSse2TwoRegisterShuffleNoCacheNoAffine},
+    {Cpu::Sse2, "two-register shuffle, no cache",
+        absoluteTransformations3DSse2TwoRegisterShuffleNoCache},
+    {Cpu::Sse2, "two-register shuffle",
+        absoluteTransformations3DSse2TwoRegisterShuffle},
+    #endif
+    {Cpu::Sse2, nullptr, nullptr},
+    #endif
+    #ifdef CORRADE_ENABLE_AVX
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    {Cpu::Avx, "no cache, no affine transform",
+        absoluteTransformations3DAvxNoCacheNoAffine},
+    {Cpu::Avx, "no cache",
+        absoluteTransformations3DAvxNoCache},
+    #endif
+    {Cpu::Avx, nullptr, nullptr},
+    #endif
+    #ifdef CORRADE_ENABLE_AVX_FMA
+    {Cpu::Avx|Cpu::AvxFma, nullptr, nullptr},
+    #endif
+    #ifdef CORRADE_ENABLE_AVX512F
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    {Cpu::Avx512f, "no affine transform, broadcast",
+        absoluteTransformations3DAvx512fNoAffineBroadcast},
+    {Cpu::Avx512f, "no affine transform",
+        absoluteTransformations3DAvx512fNoAffine},
+    #endif
+    {Cpu::Avx512f, nullptr, nullptr},
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    {Cpu::Avx512f, "hardcoded stride",
+        absoluteTransformations3DAvx512fHardcodedStride},
+    #endif
+    #endif
+    #ifdef CORRADE_ENABLE_SIMD128
+    {Cpu::Simd128, nullptr, nullptr},
+    #endif
+};
 
 const struct {
     const char* name;
@@ -75,7 +150,7 @@ const struct {
     bool fieldIdInsteadOfName;
     std::size_t transformationsToExclude, meshesToExclude;
     std::size_t expectedOutputSize;
-} TestData[]{
+} AbsoluteFieldTransformationsData[]{
     {"", {}, {}, false,
         2, 0,
         5},
@@ -104,7 +179,7 @@ const struct {
     Matrix4 globalTransformation3D;
     bool fieldIdInsteadOfName;
     std::size_t expectedOutputSize;
-} IntoData[]{
+} AbsoluteFieldTransformationsIntoData[]{
     {"", {}, {}, false,
         5},
     {"field ID", {}, {}, true,
@@ -132,9 +207,19 @@ HierarchyTest::HierarchyTest() {
               &HierarchyTest::parentsBreadthFirstChildrenDepthFirstCyclicDeep,
               &HierarchyTest::parentsBreadthFirstChildrenDepthFirstSparseAndCyclic});
 
+    addInstancedTests({&HierarchyTest::absoluteTransformations3D,
+                       &HierarchyTest::absoluteTransformations3DStrided,
+                       &HierarchyTest::absoluteTransformations3DInPlace},
+        cpuVariantCount(AbsoluteTransformationsData),
+        &HierarchyTest::captureImplementations,
+        &HierarchyTest::restoreImplementations);
+
+    addTests({&HierarchyTest::absoluteTransformationsInvalid,
+              &HierarchyTest::absoluteTransformationsInvalidParents});
+
     addInstancedTests({&HierarchyTest::absoluteFieldTransformations2D,
                        &HierarchyTest::absoluteFieldTransformations3D},
-        Containers::arraySize(TestData));
+        Containers::arraySize(AbsoluteFieldTransformationsData));
 
     addTests({&HierarchyTest::absoluteFieldTransformationsFieldNotFound,
               &HierarchyTest::absoluteFieldTransformationsNot2DNot3D,
@@ -142,9 +227,21 @@ HierarchyTest::HierarchyTest() {
 
     addInstancedTests({&HierarchyTest::absoluteFieldTransformationsInto2D,
                        &HierarchyTest::absoluteFieldTransformationsInto3D},
-        Containers::arraySize(IntoData));
+        Containers::arraySize(AbsoluteFieldTransformationsIntoData));
 
     addTests({&HierarchyTest::absoluteFieldTransformationsIntoInvalidSize});
+}
+
+void HierarchyTest::captureImplementations() {
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    _absoluteTransformations3DImplementation = Implementation::absoluteTransformations3D;
+    #endif
+}
+
+void HierarchyTest::restoreImplementations() {
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    Implementation::absoluteTransformations3D = _absoluteTransformations3DImplementation;
+    #endif
 }
 
 void HierarchyTest::parentsBreadthFirstChildrenDepthFirst() {
@@ -561,8 +658,297 @@ const struct Scene {
      {16, 113}}
 }};
 
+const Int AbsoluteTransformations3DParents[]{
+    -1, /* 0 */
+    0,  /* 1, picking the transform right before */
+    -1, /* 2, a root again */
+    1,  /* 3 */
+    1,  /* 4, using the same parent twice in a row */
+    3,  /* 5 */
+    5,  /* 6, long chain */
+    6,  /* 7, long chain */
+};
+
+alignas(64) const Matrix4 AbsoluteTransformations3DTransformations[]{
+    Matrix4::scaling({3.0f, 2.0f, -1.0f}),      /* 0 */
+    {},                                         /* 1, identity */
+    Matrix4::rotationY(45.0_degf),              /* 2 */
+    Matrix4::rotationZ(-45.0_degf),             /* 3 */
+    Matrix4::translation({1.0f, -2.0f, 3.0f}),  /* 4 */
+    Matrix4::scaling({0.5f, -2.0f, 1.0f}),      /* 5 */
+    Matrix4::rotationX(-45.0_degf),             /* 6 */
+    Matrix4::translation({0.5f, -2.0f, 1.0f}),  /* 7 */
+};
+const Matrix4 AbsoluteTransformations3DExpected[]{
+    Matrix4::translation({5.0f, 2.0f, 1.0f}),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 0 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f}),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 1 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f}),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 2 */
+        Matrix4::rotationY(45.0_degf),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 3 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f})*
+        Matrix4::rotationZ(-45.0_degf),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 4 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f})*
+        Matrix4::translation({1.0f, -2.0f, 3.0f}),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 5 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f})*
+        Matrix4::rotationZ(-45.0_degf)*
+        Matrix4::scaling({0.5f, -2.0f, 1.0f}),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 6 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f})*
+        Matrix4::rotationZ(-45.0_degf)*
+        Matrix4::scaling({0.5f, -2.0f, 1.0f})*
+        Matrix4::rotationX(-45.0_degf),
+    Matrix4::translation({5.0f, 2.0f, 1.0f})*   /* 7 */
+        Matrix4::scaling({3.0f, 2.0f, -1.0f})*
+        Matrix4::rotationZ(-45.0_degf)*
+        Matrix4::scaling({0.5f, -2.0f, 1.0f})*
+        Matrix4::rotationX(-45.0_degf)*
+        Matrix4::translation({0.5f, -2.0f, 1.0f})
+};
+
+void HierarchyTest::absoluteTransformations3D() {
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    auto&& data = AbsoluteTransformationsData[testCaseInstanceId()];
+    Implementation::absoluteTransformations3D = data.function ?
+        data.function :
+        Implementation::absoluteTransformations3DImplementation(data.features);
+    #else
+    auto&& data = cpuVariantCompiled(AbsoluteTransformationsData);
+    #endif
+    setTestCaseDescription(Utility::format(
+        data.extra ? "{}, {}" : "{}",
+        cpuVariantName(data), data.extra));
+
+    if(!isCpuVariantSupported(data))
+        CORRADE_SKIP("CPU features not supported");
+
+    /* Regular case. On MinGW alignas(64) isn't working properly for stack
+       variables so have to allocate a heap memory instead. */
+    #ifndef CORRADE_TARGET_MINGW
+    alignas(64) Matrix4 output[9];
+    #else
+    Containers::Array<Matrix4> transformations = Utility::allocateAligned<Matrix4, 64>(NoInit, 8);
+    Utility::copy(AbsoluteTransformations3DTransformations, transformations);
+    Containers::Array<Matrix4> output = Utility::allocateAligned<Matrix4, 64>(NoInit, 9);
+    #endif
+    absoluteTransformations3DInto(
+        #ifndef CORRADE_TARGET_MINGW
+        AbsoluteTransformations3DTransformations,
+        #else
+        transformations,
+        #endif
+        AbsoluteTransformations3DParents,
+        output, Matrix4::translation({5.0f, 2.0f, 1.0f}));
+    CORRADE_COMPARE_AS(Containers::arrayView(output),
+        Containers::arrayView(AbsoluteTransformations3DExpected),
+        TestSuite::Compare::Container);
+
+    /* Zero items should also just work, copying the global transform to the
+       output and nothing else. This is simple enough to not need a dedicated
+       instanced case. */
+    #ifndef CORRADE_TARGET_MINGW
+    alignas(64) Matrix4 outputSingle[1];
+    #else
+    Containers::Array<Matrix4> outputSingle = Utility::allocateAligned<Matrix4, 64>(NoInit, 1);
+    #endif
+    absoluteTransformations3DInto({}, {},
+        outputSingle, Matrix4::translation({6.0f, 3.0f, 2.0f}));
+    CORRADE_COMPARE_AS(Containers::arrayView(outputSingle),
+        Containers::arrayView({Matrix4::translation({6.0f, 3.0f, 2.0f})}),
+        TestSuite::Compare::Container);
+}
+
+void HierarchyTest::absoluteTransformations3DStrided() {
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    auto&& data = AbsoluteTransformationsData[testCaseInstanceId()];
+    Implementation::absoluteTransformations3D = data.function ?
+        data.function :
+        Implementation::absoluteTransformations3DImplementation(data.features);
+    #else
+    auto&& data = cpuVariantCompiled(AbsoluteTransformationsData);
+    #endif
+    setTestCaseDescription(Utility::format(
+        data.extra ? "{}, {}" : "{}",
+        cpuVariantName(data), data.extra));
+
+    if(!isCpuVariantSupported(data))
+        CORRADE_SKIP("CPU features not supported");
+    if(Containers::StringView{data.extra}.contains("hardcoded stride"))
+        CORRADE_SKIP("Variant doesn't support non-contiguous data");
+
+    /* Like absoluteTransformations3D() but using non-contiguous views with a
+       negative stride to verify it's handled correctly by all variants, except
+       the ones that deliberately don't support it */
+
+    /* On MinGW alignas(64) isn't working properly for stack variables so have
+       to allocate a heap memory instead. */
+    struct alignas(64) Thing {
+        Matrix4 transformation;
+        Matrix4 out;
+        Int parent;
+        /* 15*4 bytes of padding here, probably */
+    };
+    #ifndef CORRADE_TARGET_MINGW
+    Thing things[9];
+    #else
+    /* In this case it should get the alignment from the type, shouldn't need
+       to explicitly specify 64 here as well */
+    Containers::Array<Thing> things = Utility::allocateAligned<Thing>(NoInit, 9);
+    #endif
+    Containers::StridedArrayView1D<Thing> view = Containers::stridedArrayView(things).flipped<0>();
+    Utility::copy(AbsoluteTransformations3DParents,
+        view.slice(&Thing::parent).exceptPrefix(1));
+    Utility::copy(AbsoluteTransformations3DTransformations,
+        view.slice(&Thing::transformation).exceptPrefix(1));
+
+    absoluteTransformations3DInto(
+        view.slice(&Thing::transformation).exceptPrefix(1),
+        view.slice(&Thing::parent).exceptPrefix(1),
+        view.slice(&Thing::out),
+        Matrix4::translation({5.0f, 2.0f, 1.0f}));
+    CORRADE_COMPARE_AS(view.slice(&Thing::out),
+        Containers::stridedArrayView(AbsoluteTransformations3DExpected),
+        TestSuite::Compare::Container);
+}
+
+void HierarchyTest::absoluteTransformations3DInPlace() {
+    #ifdef MAGNUM_SCENETOOLS_FORCE_CPU_POINTER_DISPATCH
+    auto&& data = AbsoluteTransformationsData[testCaseInstanceId()];
+    Implementation::absoluteTransformations3D = data.function ?
+        data.function :
+        Implementation::absoluteTransformations3DImplementation(data.features);
+    #else
+    auto&& data = cpuVariantCompiled(AbsoluteTransformationsData);
+    #endif
+    setTestCaseDescription(Utility::format(
+        data.extra ? "{}, {}" : "{}",
+        cpuVariantName(data), data.extra));
+
+    if(!isCpuVariantSupported(data))
+        CORRADE_SKIP("CPU features not supported");
+
+    /* Like absoluteTransformations3D() performing the calculation in-place to
+       verify the variants don't stomp over the input data when calculating the
+       output */
+
+    /* On MinGW alignas(64) isn't working properly for stack variables so have
+       to allocate a heap memory instead. */
+    #ifndef CORRADE_TARGET_MINGW
+    alignas(64) Matrix4 transformations[9];
+    #else
+    Containers::Array<Matrix4> transformations = Utility::allocateAligned<Matrix4, 64>(NoInit, 9);
+    #endif
+    Utility::copy(AbsoluteTransformations3DTransformations,
+        Containers::arrayView(transformations).exceptPrefix(1));
+
+    absoluteTransformations3DInto(
+        Containers::arrayView(transformations).exceptPrefix(1),
+        AbsoluteTransformations3DParents,
+        transformations, Matrix4::translation({5.0f, 2.0f, 1.0f}));
+    CORRADE_COMPARE_AS(Containers::arrayView(transformations),
+        Containers::arrayView(AbsoluteTransformations3DExpected),
+        TestSuite::Compare::Container);
+}
+
+void HierarchyTest::absoluteTransformationsInvalid() {
+    CORRADE_SKIP_IF_NO_ASSERT();
+
+    /* On MinGW alignas(64) isn't working properly for stack variables so have
+       to allocate a heap memory instead. */
+    #ifndef CORRADE_TARGET_MINGW
+    alignas(64) Matrix4 transformations[6];
+    alignas(64) Matrix4 transformationsWrong[7];
+    alignas(64) Matrix4 output[7];
+    alignas(64) Matrix4 outputWrong[6];
+    #else
+    Containers::Array<Matrix4> transformations = Utility::allocateAligned<Matrix4, 64>(NoInit, 6);
+    Containers::Array<Matrix4> transformationsWrong = Utility::allocateAligned<Matrix4, 64>(NoInit, 7);
+    Containers::Array<Matrix4> output = Utility::allocateAligned<Matrix4, 64>(NoInit, 7);
+    Containers::Array<Matrix4> outputWrong = Utility::allocateAligned<Matrix4, 64>(NoInit, 6);
+    #endif
+    Int parents[6]{-1, -1, -1, -1, -1, -1};
+    Int parentsWrong[7];
+    struct WrongStride {
+        Matrix4 matrix;
+        Int padding;
+    } wrongStride[7];
+
+    /* It's actually hard to make these *not* 64-byte aligned, heh */
+    struct {
+        Int padding;
+        Matrix4 matrix[7];
+    } unaligned;
+
+    /* Just a single output matrix alone should work */
+    #ifndef CORRADE_TARGET_MINGW
+    alignas(64) Matrix4 outputSingle[1];
+    #else
+    Containers::Array<Matrix4> outputSingle = Utility::allocateAligned<Matrix4, 64>(NoInit, 1);
+    #endif
+    absoluteTransformations3DInto({}, {}, outputSingle);
+    /* Stride of -64 bytes should work with no problem */
+    absoluteTransformations3DInto(
+        Containers::stridedArrayView(transformations).flipped<0>(),
+        parents,
+        Containers::stridedArrayView(output).flipped<0>());
+
+    Containers::String out;
+    Error redirectError{&out};
+    /* Wrong sizes */
+    absoluteTransformations3DInto(transformations, parents, outputWrong);
+    absoluteTransformations3DInto(transformations, parentsWrong, output);
+    absoluteTransformations3DInto(transformationsWrong, parents, output);
+    /* Wrong stride */
+    absoluteTransformations3DInto(Containers::stridedArrayView(wrongStride).slice(&WrongStride::matrix).exceptPrefix(1), parents, output);
+    absoluteTransformations3DInto(transformations, parents, Containers::stridedArrayView(wrongStride).slice(&WrongStride::matrix));
+    /* Wrong alignment */
+    absoluteTransformations3DInto(Containers::arrayView(unaligned.matrix).exceptSuffix(1), parents, output);
+    absoluteTransformations3DInto(transformations, parents, unaligned.matrix);
+    CORRADE_COMPARE_AS(out,
+        "SceneTools::absoluteTransformations3DInto(): expected parents with 6 elements and output with 7 elements but got 6 and 6\n"
+        "SceneTools::absoluteTransformations3DInto(): expected parents with 6 elements and output with 7 elements but got 7 and 7\n"
+        "SceneTools::absoluteTransformations3DInto(): expected parents with 7 elements and output with 8 elements but got 6 and 7\n"
+        "SceneTools::absoluteTransformations3DInto(): transformations stride 68 is not a multiple of 64 bytes\n"
+        "SceneTools::absoluteTransformations3DInto(): output stride 68 is not a multiple of 64 bytes\n"
+        "SceneTools::absoluteTransformations3DInto(): transformations are not 64-byte aligned\n"
+        "SceneTools::absoluteTransformations3DInto(): output is not 64-byte aligned\n",
+        TestSuite::Compare::String);
+}
+
+void HierarchyTest::absoluteTransformationsInvalidParents() {
+    CORRADE_SKIP_IF_NO_DEBUG_ASSERT();
+
+    /* Separate test case because these are debug-only assertions */
+
+    alignas(64) Matrix4 transformations[4];
+    alignas(64) Matrix4 output[5];
+
+    Containers::String out;
+    Error redirectError{&out};
+    absoluteTransformations3DInto(transformations, Containers::arrayView({
+        -1, 0, 1, 3
+    }), output);
+    /* Values less than -1 are also wrong */
+    absoluteTransformations3DInto(transformations, Containers::arrayView({
+        -1, 0, -2, 1
+    }), output);
+    /* The first parent cannot be anything else than -1 */
+    absoluteTransformations3DInto(transformations, Containers::arrayView({
+        0, -1, -1, -1
+    }), output);
+    CORRADE_COMPARE_AS(out,
+        "SceneTools::absoluteTransformations3DInto(): expected parents to be -1 or back-referencing but got parent 3 at index 3\n"
+        "SceneTools::absoluteTransformations3DInto(): expected parents to be -1 or back-referencing but got parent -2 at index 2\n"
+        "SceneTools::absoluteTransformations3DInto(): expected parents to be -1 or back-referencing but got parent 0 at index 0\n",
+        TestSuite::Compare::String);
+}
+
 void HierarchyTest::absoluteFieldTransformations2D() {
-    auto&& data = TestData[testCaseInstanceId()];
+    auto&& data = AbsoluteFieldTransformationsData[testCaseInstanceId()];
     setTestCaseDescription(data.name);
 
     Trade::SceneData scene{Trade::SceneMappingType::UnsignedShort, 33, {}, Data, {
@@ -621,7 +1007,7 @@ void HierarchyTest::absoluteFieldTransformations2D() {
 }
 
 void HierarchyTest::absoluteFieldTransformations3D() {
-    auto&& data = TestData[testCaseInstanceId()];
+    auto&& data = AbsoluteFieldTransformationsData[testCaseInstanceId()];
     setTestCaseDescription(data.name);
 
     Trade::SceneData scene{Trade::SceneMappingType::UnsignedShort, 33, {}, Data, {
@@ -737,7 +1123,7 @@ void HierarchyTest::absoluteFieldTransformationsNoParentField() {
 }
 
 void HierarchyTest::absoluteFieldTransformationsInto2D() {
-    auto&& data = IntoData[testCaseInstanceId()];
+    auto&& data = AbsoluteFieldTransformationsIntoData[testCaseInstanceId()];
     setTestCaseDescription(data.name);
 
     /* The *Into() variant is the actual base implementation, so just verify
@@ -794,7 +1180,7 @@ void HierarchyTest::absoluteFieldTransformationsInto2D() {
 }
 
 void HierarchyTest::absoluteFieldTransformationsInto3D() {
-    auto&& data = IntoData[testCaseInstanceId()];
+    auto&& data = AbsoluteFieldTransformationsData[testCaseInstanceId()];
     setTestCaseDescription(data.name);
 
     /* The *Into() variant is the actual base implementation, so just verify

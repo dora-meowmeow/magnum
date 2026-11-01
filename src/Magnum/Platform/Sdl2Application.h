@@ -386,9 +386,9 @@ options needs to be set via a `*.plist` file. Some options can be configured
 from runtime when creating the SDL2 application window, see documentation of
 a particular value for details:
 
--   @ref Configuration::WindowFlag::Borderless hides the menu bar
--   @ref Configuration::WindowFlag::Resizable makes the application respond to
-    device orientation changes
+-   @ref WindowFlag::Borderless hides the menu bar
+-   @ref WindowFlag::Resizable makes the application respond to device
+    orientation changes
 
 @subsection Platform-Sdl2Application-platform-specific-emscripten Emscripten specifics
 
@@ -405,9 +405,9 @@ to use a window size that corresponds to *CSS pixel size* of the
 @cb{.html} <canvas> @ce element. The size is then multiplied by DPI scaling
 value, see @ref Platform-Sdl2Application-dpi "DPI awareness" below for details.
 
-If you enable @ref Configuration::WindowFlag::Resizable, the canvas will be
-resized when size of the canvas changes and you get @ref viewportEvent(). If
-the flag is not enabled, no canvas resizing is performed.
+If you enable @ref WindowFlag::Resizable, the canvas will be resized when size
+of the canvas changes and you get @ref viewportEvent(). If the flag is not
+enabled, no canvas resizing is performed.
 
 @subsection Platform-Sdl2Application-platform-specific-gles OpenGL ES specifics
 
@@ -433,19 +433,25 @@ variable).
 
 -   Framebuffer DPI scaling. The window is created with exactly the requested
     size and all event coordinates are reported also relative to that size.
-    However, the window backing framebuffer has a different size. This is only
-    supported on macOS and iOS. See @ref platforms-macos-hidpi for details how
-    to enable it. Equivalent to passing
+    However, the window backing framebuffer has a different size scaled
+    according to environment settings with no ability to control the scale
+    ratio from the application. This is supported on Unix when running under
+    Wayland with original SDL2 (as opposed to sdl2-compat layered over SDL3),
+    and on macOS and iOS, on each it's also the only supported value. In case
+    of Apple platforms see @ref platforms-macos-hidpi for details how to make
+    the application DPI-aware. Equivalent to passing
     @ref Configuration::DpiScalingPolicy::Framebuffer to
     @ref Configuration::setSize() or `framebuffer` via command line /
     environment.
 -   Virtual DPI scaling. Scales the window based on DPI scaling setting in the
     system. For example if a 800x600 window is requested and DPI scaling is set
     to 200%, the resulting window will have 1600x1200 pixels. The backing
-    framebuffer will have the same size. This is supported on Linux and
-    Windows; on Windows the application is first checked for DPI awareness
-    as described in @ref platforms-windows-hidpi and if the application is not
-    DPI-aware, 1:1 scaling is used. Equivalent to passing
+    framebuffer will have the same size. This is supported on Unix when running
+    under X11, on Unix when running under Wayland with sdl2-compat layered over
+    SDL3 (as opposed to original SDL2) and on Windows. On Windows the
+    application is first checked for DPI awareness as described in
+    @ref platforms-windows-hidpi and if the application is not DPI-aware, 1:1
+    scaling is used. Equivalent to passing
     @ref Configuration::DpiScalingPolicy::Virtual to
     @ref Configuration::setSize() or `virtual` on command line.
 -   Physical DPI scaling. Takes the requested window size as a physical size
@@ -456,10 +462,10 @@ variable).
     DPI display. On platforms that don't have a concept of a window (such
     as mobile platforms or @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten"), it
     causes the framebuffer to match display pixels 1:1 without any scaling.
-    This is supported on Linux and all mobile platforms (except iOS) and
-    Emscripten. On Windows this is equivalent to virtual DPI scaling but
-    without doing an explicit check for DPI awareness first. Equivalent to
-    passing @ref Configuration::DpiScalingPolicy::Physical to
+    This is supported on Unix when running under X11, on Unix when running
+    under Wayland with sdl2-compat layered over SDL3 (as opposed to original
+    SDL2), on Windows and on mobile platforms (except iOS) and web. Equivalent
+    to passing @ref Configuration::DpiScalingPolicy::Physical to
     @ref Configuration::setSize() or `physical` via command line / environment.
 
 Besides the above, it's possible to supply a custom DPI scaling value to
@@ -555,11 +561,24 @@ class Sdl2Application {
 
         /* The damn thing cannot handle forward enum declarations */
         #ifndef DOXYGEN_GENERATING_OUTPUT
+        enum class WindowFlag: Uint32;
         enum class Modifier: Uint16;
         enum class Key: SDL_Keycode;
         enum class PointerEventSource: UnsignedByte;
         enum class Pointer: UnsignedByte;
         #endif
+
+        /**
+         * @brief Window flags
+         * @m_since_latest
+         *
+         * @see @ref addWindowFlags(), @ref clearWindowFlags(),
+         *      @ref Configuration::setWindowFlags(),
+         *      @ref Configuration::addWindowFlags(),
+         *      @ref Configuration::clearWindowFlags(),
+         *      @ref Configuration::Flags
+         */
+        typedef Containers::EnumSet<WindowFlag> WindowFlags;
 
         /**
          * @brief Set of keyboard modifiers
@@ -668,12 +687,12 @@ class Sdl2Application {
         /**
          * @brief Construct without explicit GPU context configuration
          *
-         * If @ref Configuration::WindowFlag::Contextless is present or Magnum
-         * was not built with @ref MAGNUM_TARGET_GL, this creates a window
-         * without any GPU context attached, leaving that part on the user.
+         * If @ref Configuration::Flag::Contextless is present or Magnum was
+         * not built with @ref MAGNUM_TARGET_GL, this creates a window without
+         * any GPU context attached, leaving that part on the user.
          *
-         * If none of the flags is present and Magnum was built with
-         * @ref MAGNUM_TARGET_GL, this is equivalent to calling
+         * If @ref Configuration::Flag::Contextless is not present and Magnum
+         * was built with @ref MAGNUM_TARGET_GL, this is equivalent to calling
          * @ref Sdl2Application(const Arguments&, const Configuration&, const GLConfiguration&)
          * with default-constructed @ref GLConfiguration.
          *
@@ -812,14 +831,14 @@ class Sdl2Application {
         /**
          * @brief Create a window with given configuration
          *
-         * If @ref Configuration::WindowFlag::Contextless is present or Magnum
-         * was not built with @ref MAGNUM_TARGET_GL, this creates a window
-         * without any GPU context attached, leaving that part on the user.
+         * If @ref Configuration::Flag::Contextless is present or Magnum was
+         * not built with @ref MAGNUM_TARGET_GL, this creates a window without
+         * any GPU context attached, leaving that part on the user.
          *
-         * If none of the flags is present and Magnum was built with
-         * @ref MAGNUM_TARGET_GL, this is equivalent to calling
-         * @ref create(const Configuration&, const GLConfiguration&) with
-         * default-constructed @ref GLConfiguration.
+         * If @ref Configuration::Flag::Contextless is not present and Magnum
+         * was built with @ref MAGNUM_TARGET_GL, this is equivalent to calling
+         * @ref create(const Configuration&, const GLConfiguration&)
+         * with default-constructed @ref GLConfiguration.
          *
          * See also @ref building-features for more information.
          */
@@ -915,7 +934,7 @@ class Sdl2Application {
         void setMaxWindowSize(const Vector2i& size);
         #endif
 
-        #if defined(MAGNUM_TARGET_GL) || defined(DOXYGEN_GENERATING_OUTPUT)
+        #ifdef MAGNUM_TARGET_GL
         /**
          * @brief Framebuffer size
          *
@@ -1011,15 +1030,53 @@ class Sdl2Application {
         void setContainerCssClass(Containers::StringView cssClass);
         #endif
 
+        #ifndef CORRADE_TARGET_EMSCRIPTEN
+        /**
+         * @brief Add window flags
+         * @m_since_latest
+         *
+         * Note that certain flags can be used only for window creation, and on
+         * older SDL versions toggling some flags is not supported. See
+         * documentation of particular @ref WindowFlag values for details.
+         * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+         * @see @ref clearWindowFlags(), @ref Configuration::addWindowFlags()
+         */
+        void addWindowFlags(WindowFlags flags);
+
+        /**
+         * @brief Clear window flags
+         * @m_since_latest
+         *
+         * Note that certain flags can be used only for window creation, and on
+         * older SDL versions toggling some flags is not supported. See
+         * documentation of particular @ref WindowFlag values for details.
+         * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+         * @see @ref addWindowFlags(), @ref Configuration::clearWindowFlags()
+         */
+        void clearWindowFlags(WindowFlags flags);
+        #endif
+
+        #ifdef MAGNUM_TARGET_GL
         /**
          * @brief Swap buffers
          *
          * Paints currently rendered framebuffer on screen.
+         *
+         * @note This function is available only if Magnum is compiled with
+         *      @ref MAGNUM_TARGET_GL enabled (done by default). See
+         *      @ref building-features for more information.
+         *
          * @see @ref setSwapInterval()
          */
         void swapBuffers();
 
-        /** @brief Swap interval */
+        /**
+         * @brief Swap interval
+         *
+         * @note This function is available only if Magnum is compiled with
+         *      @ref MAGNUM_TARGET_GL enabled (done by default). See
+         *      @ref building-features for more information.
+         */
         Int swapInterval() const;
 
         /**
@@ -1030,9 +1087,15 @@ class Sdl2Application {
          * message and returns @cpp false @ce if swap interval cannot be set,
          * @cpp true @ce otherwise. Default is driver-dependent, you can query
          * the value with @ref swapInterval().
+         *
+         * @note This function is available only if Magnum is compiled with
+         *      @ref MAGNUM_TARGET_GL enabled (done by default). See
+         *      @ref building-features for more information.
+         *
          * @see @ref setMinimalLoopPeriod()
          */
         bool setSwapInterval(Int interval);
+        #endif
 
         #ifndef CORRADE_TARGET_EMSCRIPTEN
         /**
@@ -1212,7 +1275,8 @@ class Sdl2Application {
             /**
              * Hidden and locked. When the mouse is locked, only
              * @ref MouseMoveEvent::relativePosition() is changing, absolute
-             * position stays the same.
+             * position stays the same. See also @ref WindowFlag::MouseLocked
+             * for just locking the cursor to the window area.
              * @note Not available in @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
              */
             HiddenLocked
@@ -1629,6 +1693,148 @@ class Sdl2Application {
 
         int _exitCode = 0;
 };
+
+/**
+@brief Window flag
+@m_since_latest
+
+@see @ref WindowFlags, @ref addWindowFlags(), @ref clearWindowFlags(),
+    @ref Configuration::setWindowFlags(), @ref Configuration::addWindowFlags(),
+    @ref Configuration::clearWindowFlags(), @ref Configuration::Flags
+*/
+enum class Sdl2Application::WindowFlag: Uint32 {
+    /**
+     * Resizable window. On iOS this allows the application to respond to
+     * display orientation changes, on
+     * @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten" this causes the framebuffer
+     * to be resized when the @cb{.html} <canvas> @ce size changes.
+     *
+     * Implement @ref viewportEvent() to react to the resizing events.
+     */
+    Resizable = SDL_WINDOW_RESIZABLE,
+
+    #ifndef CORRADE_TARGET_EMSCRIPTEN
+    /**
+     * Fullscreen window
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     */
+    Fullscreen = SDL_WINDOW_FULLSCREEN,
+
+    /**
+     * Fullscreen window at the current desktop resolution
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     */
+    FullscreenDesktop = SDL_WINDOW_FULLSCREEN_DESKTOP,
+
+    /**
+     * No window decoration. On iOS this hides the menu bar.
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     */
+    Borderless = SDL_WINDOW_BORDERLESS,
+
+    /**
+     * Hidden window
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     */
+    Hidden = SDL_WINDOW_HIDDEN,
+
+    /**
+     * Maximized window
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     */
+    Maximized = SDL_WINDOW_MAXIMIZED,
+
+    /**
+     * Minimized window
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     */
+    Minimized = SDL_WINDOW_MINIMIZED,
+
+    /**
+     * Window with mouse locked
+     *
+     * See also @ref Cursor::HiddenLocked for locking a mouse to the window
+     * area together with hiding it.
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     * @todo SDL_WINDOW_MOUSE_CAPTURE, also what all those do? isn't it
+     *      redundant / better handled with cursor APIs?
+     */
+    /* As of 2.0.16 there's a separate keyboard grab, be clear that it's just
+       for the mouse */
+    #if SDL_MAJOR_VERSION*10000 + SDL_MINOR_VERSION*100 + SDL_PATCHLEVEL >= 20016
+    MouseLocked = SDL_WINDOW_MOUSE_GRABBED,
+    #else
+    MouseLocked = SDL_WINDOW_INPUT_GRABBED,
+    #endif
+
+    /** @todo SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MOUSE_FOCUS, GLFW has
+        GLFW_FOCUS_ON_SHOW (not exposed) -- what's the relation? How to make
+        these compatible? */
+
+    /**
+     * Always on top
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     *      According to SDL docs works only on X11. Toggling this flag with
+     *      @ref addWindowFlags() and @ref clearWindowFlags() is not supported
+     *      in SDL versions before 2.0.16, the flag can only be used for window
+     *      creation.
+     */
+    AlwaysOnTop = SDL_WINDOW_ALWAYS_ON_TOP,
+
+    /**
+     * Don't add the window to taskbar
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     *      According to SDL docs works only on X11. Toggling this flag with
+     *      @ref addWindowFlags() and @ref clearWindowFlags() is not supported,
+     *      the flag can only be used for window creation.
+     */
+    SkipTaskbar = SDL_WINDOW_SKIP_TASKBAR,
+
+    /**
+     * Window should be treated as a utility window
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     *      According to SDL docs works only on X11. Toggling this flag with
+     *      @ref addWindowFlags() and @ref clearWindowFlags() is not supported,
+     *      the flag can only be used for window creation.
+     */
+    Utility = SDL_WINDOW_UTILITY,
+
+    /**
+     * Window should be treated as a tooltip
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     *      According to SDL docs works only on X11. Furthermore, this flag
+     *      only seems to work with the original SDL2 and not with the
+     *      compatibility layer implemented on top of SDL3. Toggling this flag
+     *      with @ref addWindowFlags() and @ref clearWindowFlags() is not
+     *      supported, the flag can only be used for window creation.
+     */
+    Tooltip = SDL_WINDOW_TOOLTIP,
+
+    /**
+     * Window should be treated as a popup menu
+     *
+     * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
+     *      According to SDL docs works only on X11. Furthermore, this flag
+     *      only seems to work with the original SDL2 and not with the
+     *      compatibility layer implemented on top of SDL3. Toggling this flag
+     *      with @ref addWindowFlags() and @ref clearWindowFlags() is not
+     *      supported, the flag can only be used for window creation.
+     */
+    PopupMenu = SDL_WINDOW_POPUP_MENU,
+    #endif
+};
+
+CORRADE_ENUMSET_OPERATORS(Sdl2Application::WindowFlags)
 
 /**
 @brief Keyboard modifier
@@ -2059,7 +2265,8 @@ class Sdl2Application::GLConfiguration: public GL::Context::Configuration {
          * Includes also everything from @ref GL::Context::Configuration::Flag
          * except for @relativeref{GL::Context::Configuration,Flag::Windowless},
          * which is not meant to be enabled for windowed apps.
-         * @see @ref Flags, @ref setFlags(), @ref GL::Context::Flag
+         * @see @ref Flags, @ref setFlags(), @ref addFlags(),
+         *      @ref clearFlags(), @ref GL::Context::Flag
          */
         enum class Flag: UnsignedLong {
             #ifndef CORRADE_TARGET_EMSCRIPTEN
@@ -2107,6 +2314,15 @@ class Sdl2Application::GLConfiguration: public GL::Context::Configuration {
             /* Treated as a separate attribute and not a flag in SDL, thus
                handling manually. */
             NoError = 1ull << 32,
+
+            /**
+             * Stereo rendering.
+             * @requires_gles Context flags are not available in WebGL.
+             * @m_since_latest
+             */
+            /* Treated as a separate attribute and not a flag in SDL, thus
+               handling manually. */
+            Stereo = 1ull << 33,
             #endif
 
             /**
@@ -2137,12 +2353,12 @@ class Sdl2Application::GLConfiguration: public GL::Context::Configuration {
         /**
          * @brief Context flags
          *
-         * @see @ref setFlags(), @ref GL::Context::Flags
+         * @see @ref setFlags(), @ref addFlags(), @ref clearFlags(),
+         *      @ref GL::Context::Flags
          */
         typedef Containers::EnumSet<Flag> Flags;
 
         explicit GLConfiguration();
-        ~GLConfiguration();
 
         /** @brief Context flags */
         Flags flags() const {
@@ -2322,7 +2538,9 @@ namespace Implementation {
     enum class Sdl2DpiScalingPolicy: UnsignedByte {
         /* Using 0 for an "unset" value */
 
-        #ifdef CORRADE_TARGET_APPLE
+        /* Framebuffer is used only with Wayland and only on sdl2 (not
+           sdl2-compat layered over SDL3) on Unix */
+        #if defined(CORRADE_TARGET_APPLE) || (defined(CORRADE_TARGET_UNIX) && SDL_PATCHLEVEL < 50)
         Framebuffer = 1,
         #endif
 
@@ -2335,12 +2553,17 @@ namespace Implementation {
         #endif
 
         Default
+            /* On non-Apple Unix with sdl2 (not sdl2-compat) it's not aliased
+               to anything as it can be either Virtual or Framebuffer depending
+               on whether we're running on Wayland */
             #ifdef CORRADE_TARGET_APPLE
             = Framebuffer
-            #elif !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
+            #elif !defined(CORRADE_TARGET_UNIX) || SDL_PATCHLEVEL >= 50 || defined(CORRADE_TARGET_EMSCRIPTEN) || defined(CORRADE_TARGET_ANDROID)
+            #if !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_ANDROID)
             = Virtual
             #else
             = Physical
+            #endif
             #endif
     };
 }
@@ -2354,127 +2577,13 @@ namespace Implementation {
 class Sdl2Application::Configuration {
     public:
         /**
-         * @brief Window flag
+         * @brief Flag
+         * @m_since_latest
          *
-         * @see @ref WindowFlags, @ref setWindowFlags()
+         * @see @ref Flags, @ref setFlags(), @ref addFlags(),
+         *      @ref clearFlags(), @ref WindowFlag
          */
-        enum class WindowFlag: Uint32 {
-            /**
-             * Resizable window. On iOS this allows the application to respond
-             * to display orientation changes, on
-             * @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten" this causes the
-             * framebuffer to be resized when the @cb{.html} <canvas> @ce size
-             * changes.
-             *
-             * Implement @ref viewportEvent() to react to the resizing events.
-             */
-            Resizable = SDL_WINDOW_RESIZABLE,
-
-            #ifndef CORRADE_TARGET_EMSCRIPTEN
-            /**
-             * Fullscreen window
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             */
-            Fullscreen = SDL_WINDOW_FULLSCREEN,
-
-            /**
-             * Fullscreen window at the current desktop resolution
-             * @m_since{2020,06}
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             */
-            FullscreenDesktop = SDL_WINDOW_FULLSCREEN_DESKTOP,
-
-            /**
-             * No window decoration. On iOS this hides the menu bar.
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             */
-            Borderless = SDL_WINDOW_BORDERLESS,
-            #endif
-
-            #ifndef CORRADE_TARGET_EMSCRIPTEN
-            /**
-             * Hidden window
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             */
-            Hidden = SDL_WINDOW_HIDDEN,
-
-            /**
-             * Maximized window
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             */
-            Maximized = SDL_WINDOW_MAXIMIZED,
-
-            /**
-             * Minimized window
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             */
-            Minimized = SDL_WINDOW_MINIMIZED,
-
-            /**
-             * Window with mouse locked
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             * @todo SDL_WINDOW_MOUSE_CAPTURE, also what all those do? isn't it
-             *      redundant / better handled with cursor APIs?
-             */
-            MouseLocked = SDL_WINDOW_INPUT_GRABBED,
-
-            /** @todo SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_MOUSE_FOCUS, GLFW has
-                GLFW_FOCUSED (exposed as Focused) and GLFW_FOCUS_ON_SHOW (not
-                exposed) -- what's the relation? How to make these compatible? */
-
-            /**
-             * Always on top
-             * @m_since{2020,06}
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             *      According to SDL docs works only on X11.
-             */
-            AlwaysOnTop = SDL_WINDOW_ALWAYS_ON_TOP,
-
-            /**
-             * Don't add the window to taskbar
-             * @m_since{2020,06}
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             *      According to SDL docs works only on X11.
-             */
-            SkipTaskbar = SDL_WINDOW_SKIP_TASKBAR,
-
-            /**
-             * Window should be treated as a utility window
-             * @m_since{2020,06}
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             *      According to SDL docs works only on X11.
-             */
-            Utility = SDL_WINDOW_UTILITY,
-
-            /**
-             * Window should be treated as a tooltip
-             * @m_since{2020,06}
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             *      According to SDL docs works only on X11.
-             */
-            Tooltip = SDL_WINDOW_TOOLTIP,
-
-            /**
-             * Window should be treated as a popup menu
-             * @m_since{2020,06}
-             *
-             * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             *      According to SDL docs works only on X11.
-             */
-            PopupMenu = SDL_WINDOW_POPUP_MENU,
-            #endif
-
+        enum class Flag: Uint32 {
             /**
              * Do not create any GPU context. Use together with
              * @ref Sdl2Application(const Arguments&, const Configuration&),
@@ -2488,33 +2597,192 @@ class Sdl2Application::Configuration {
             Contextless = 1u << 31, /* Hope this won't ever conflict with anything */
 
             /**
-             * Request a window for use with OpenGL. Useful in combination with
-             * @ref WindowFlag::Contextless, otherwise enabled implicitly when
+             * Request a window for use with OpenGL. Enabled implicitly when
              * creating an OpenGL context using
              * @ref Sdl2Application(const Arguments&, const Configuration&, const GLConfiguration&),
              * @ref create(const Configuration&, const GLConfiguration&) or
              * @ref tryCreate(const Configuration&, const GLConfiguration&).
-             * @m_since{2019,10}
+             * Use in combination with @ref Flag::Contextless and
+             * @ref Sdl2Application(const Arguments&, const Configuration&),
+             * @ref create(const Configuration&) or
+             * @ref tryCreate(const Configuration&) to create a window for use
+             * with OpenGL without actually creating the OpenGL context.
              */
             OpenGL = SDL_WINDOW_OPENGL,
 
             #ifndef CORRADE_TARGET_EMSCRIPTEN
             /**
-             * Request a window for use with Vulkan. Useful in combination with
-             * @ref WindowFlag::Contextless.
+             * Request a window for use with Vulkan. Use in combination with
+             * @ref Flag::Contextless and
+             * @ref Sdl2Application(const Arguments&, const Configuration&),
+             * @ref create(const Configuration&) or
+             * @ref tryCreate(const Configuration&) to create a window for use
+             * exclusively with Vulkan. Use *without* @ref Flag::Contextless on
+             * builds with @ref MAGNUM_TARGET_GL enabled to create a window for
+             * use by both OpenGL and Vulkan.
              * @note Not available on @ref CORRADE_TARGET_EMSCRIPTEN "Emscripten".
-             * @m_since{2019,10}
              */
             Vulkan = SDL_WINDOW_VULKAN
             #endif
         };
 
         /**
-         * @brief Window flags
+         * @brief Flags
+         * @m_since_latest
          *
-         * @see @ref setWindowFlags()
+         * @see @ref setFlags(), @ref addFlags(), @ref clearFlags(),
+         *      @ref WindowFlags
          */
-        typedef Containers::EnumSet<WindowFlag> WindowFlags;
+        typedef Containers::EnumSet<Flag> Flags;
+
+        #ifdef MAGNUM_BUILD_DEPRECATED
+        /**
+         * @brief @copybrief Sdl2Application::WindowFlag
+         * @m_deprecated_since_latest Use @ref Sdl2Application::WindowFlag, or
+         *      @ref Flag with @ref setFlags(), @ref addFlags() and
+         *      @ref clearFlags() instead.
+         */
+        enum class
+        #if __clang_major__ < 23
+        /* Clang 23 in Emscripten 5.0.2+ issues a deprecation warning inside
+           <type_traits> due to std::underlying_type used by EnumSet on this
+           enum. Not sure if it's because the STL headers are in ~/.cache or if
+           it's a general annoyance that'll happen with real Clang 23 as well,
+           for now just skipping the deprecation annotation to silence it. */
+        CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag, or Flag with setFlags(), addFlags() and clearFlags() instead")
+        #endif
+        WindowFlag: Uint32 {
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Resizable
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Resizable instead.
+             */
+            Resizable CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Resizable instead") = Uint32(Sdl2Application::WindowFlag::Resizable),
+
+            #ifndef CORRADE_TARGET_EMSCRIPTEN
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Fullscreen
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Fullscreen instead.
+             */
+            Fullscreen CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Fullscreen instead") = Uint32(Sdl2Application::WindowFlag::Fullscreen),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::FullscreenDesktop
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::FullscreenDesktop
+             *      instead.
+             */
+            FullscreenDesktop CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::FullscreenDesktop instead") = Uint32(Sdl2Application::WindowFlag::FullscreenDesktop),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Borderless
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Borderless instead.
+             */
+            Borderless CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Borderless instead") = Uint32(Sdl2Application::WindowFlag::Borderless),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Hidden
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Hidden instead.
+             */
+            Hidden CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Hidden instead") = Uint32(Sdl2Application::WindowFlag::Hidden),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Maximized
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Maximized instead.
+             */
+            Maximized CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Maximized instead") = Uint32(Sdl2Application::WindowFlag::Maximized),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Minimized
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Minimized instead.
+             */
+            Minimized CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Minimized instead") = Uint32(Sdl2Application::WindowFlag::Minimized),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::MouseLocked
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::MouseLocked instead.
+             */
+            MouseLocked CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::MouseLocked instead") = Uint32(Sdl2Application::WindowFlag::MouseLocked),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::AlwaysOnTop
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::AlwaysOnTop instead.
+             */
+            AlwaysOnTop CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::AlwaysOnTop instead") = Uint32(Sdl2Application::WindowFlag::AlwaysOnTop),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::SkipTaskbar
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::SkipTaskbar instead.
+             */
+            SkipTaskbar CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::SkipTaskbar instead") = Uint32(Sdl2Application::WindowFlag::SkipTaskbar),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Utility
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Utility instead.
+             */
+            Utility CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Utility instead") = Uint32(Sdl2Application::WindowFlag::Utility),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::Tooltip
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::Tooltip instead.
+             */
+            Tooltip CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::Tooltip instead") = Uint32(Sdl2Application::WindowFlag::Tooltip),
+
+            /**
+             * @copydoc Sdl2Application::WindowFlag::PopupMenu
+             * @m_deprecated_since_latest Use
+             *      @ref Sdl2Application::WindowFlag::PopupMenu instead.
+             */
+            PopupMenu CORRADE_DEPRECATED_ENUM("use Sdl2Application::WindowFlag::PopupMenu instead") = Uint32(Sdl2Application::WindowFlag::PopupMenu),
+            #endif
+
+            /**
+             * @copydoc Flag::Contextless
+             * @m_deprecated_since_latest Use @ref Flag::Contextless with
+             *      @ref setFlags(), @ref addFlags() or @ref clearFlags()
+             *      instead.
+             */
+            Contextless CORRADE_DEPRECATED_ENUM("use Flag::Contextless with setFlags(), addFlags() or clearFlags() instead") = Uint32(Flag::Contextless),
+
+            /**
+             * @copydoc Flag::OpenGL
+             * @m_deprecated_since_latest Use @ref Flag::OpenGL with
+             *      @ref setFlags(), @ref addFlags() or @ref clearFlags()
+             *      instead.
+             */
+            OpenGL CORRADE_DEPRECATED_ENUM("use Flag::OpenGL with setFlags(), addFlags() or clearFlags() instead") = Uint32(Flag::OpenGL),
+
+            #ifndef CORRADE_TARGET_EMSCRIPTEN
+            /**
+             * @copydoc Flag::Vulkan
+             * @m_deprecated_since_latest Use @ref Flag::Vulkan with
+             *      @ref setFlags(), @ref addFlags() or @ref clearFlags()
+             *      instead.
+             */
+            Vulkan CORRADE_DEPRECATED_ENUM("use Flag::Contextless with setFlags(), addFlags() or clearFlags() instead") = Uint32(Flag::Vulkan),
+            #endif
+        };
+
+        /**
+         * @brief @copybrief Sdl2Application::WindowFlags
+         * @m_deprecated_since_latest Use @ref Sdl2Application::WindowFlags, or
+         *      @ref Flags with @ref setFlags(), @ref addFlags() and
+         *      @ref clearFlags() instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH
+        typedef CORRADE_DEPRECATED("use Sdl2Application::WindowFlags, or Flags with setFlags(), addFlags() and clearFlags() instead") Containers::EnumSet<WindowFlag> WindowFlags;
+        CORRADE_IGNORE_DEPRECATED_POP
+        #endif
 
         /**
          * @brief DPI scaling policy
@@ -2529,8 +2797,12 @@ class Sdl2Application::Configuration {
             /**
              * Framebuffer DPI scaling. The window will have the same size as
              * requested, but the framebuffer size will be different. Supported
-             * only on macOS and iOS and is also the only supported value
-             * there.
+             * on Unix when running under Wayland with original SDL2 (as
+             * opposed to sdl2-compat layered over SDL3), and on macOS and iOS,
+             * on each it's also the only supported value.
+             *
+             * Equivalent to `--magnum-dpi-scaling framebuffer` passed on
+             * command-line.
              */
             Framebuffer,
 
@@ -2538,8 +2810,10 @@ class Sdl2Application::Configuration {
              * Virtual DPI scaling. Scales the window based on UI scaling
              * setting in the system. Falls back to
              * @ref DpiScalingPolicy::Physical on platforms that don't support
-             * it. Supported only on desktop platforms (except macOS) and it's
-             * the default there.
+             * it. Supported on Unix when running under X11, on Unix when
+             * running under Wayland with sdl2-compat layered over SDL3 (as
+             * opposed to original SDL2) and on Windows, on each it's the
+             * default there.
              *
              * Equivalent to `--magnum-dpi-scaling virtual` passed on
              * command-line.
@@ -2552,8 +2826,10 @@ class Sdl2Application::Configuration {
              * and scales it to have the same size on given display physical
              * DPI. On platforms that don't have a concept of a window it
              * causes the framebuffer to match screen pixels 1:1 without any
-             * scaling. Supported on desktop platforms except macOS and on
-             * mobile and web. Default on mobile and web.
+             * scaling. Supported on Unix when running under X11, on Unix when
+             * running under Wayland with sdl2-compat layered over SDL3 (as
+             * opposed to original SDL2), on Windows and on mobile platforms
+             * (except iOS) and web. Default on mobile and web.
              *
              * Equivalent to `--magnum-dpi-scaling physical` passed on
              * command-line.
@@ -2561,10 +2837,14 @@ class Sdl2Application::Configuration {
             Physical,
 
             /**
-             * Default policy for current platform. Alias to one of
+             * Default policy for current platform. Resolves to one of
              * @ref DpiScalingPolicy::Framebuffer, @ref DpiScalingPolicy::Virtual
-             * or @ref DpiScalingPolicy::Physical depending on platform. See
-             * @ref Platform-Sdl2Application-dpi for details.
+             * or @ref DpiScalingPolicy::Physical depending on platform and
+             * window system used. See @ref Platform-Sdl2Application-dpi for
+             * details.
+             *
+             * Equivalent to `--magnum-dpi-scaling default` passed on
+             * command-line.
              */
             Default
         };
@@ -2674,18 +2954,87 @@ class Sdl2Application::Configuration {
             return *this;
         }
 
-        /** @brief Window flags */
-        WindowFlags windowFlags() const { return _windowFlags; }
+        /**
+         * @brief Flags
+         * @m_since_latest
+         *
+         * @see @ref windowFlags()
+         */
+        Flags flags() const {
+            return _flags;
+        }
+
+        /**
+         * @brief Set flags
+         * @return Reference to self (for method chaining)
+         * @m_since_latest
+         *
+         * Default are none, although @ref Flag::OpenGL is implicitly enabled
+         * when creating an OpenGL context using
+         * @ref Sdl2Application(const Arguments&, const Configuration&, const GLConfiguration&),
+         * @ref create(const Configuration&, const GLConfiguration&) or
+         * @ref tryCreate(const Configuration&, const GLConfiguration&). To
+         * avoid clearing default flags by accident, prefer to use
+         * @ref addFlags() and @ref clearFlags() instead.
+         * @see @ref setWindowFlags()
+         */
+        Configuration& setFlags(Flags flags) {
+            _flags = flags;
+            return *this;
+        }
+
+        /**
+         * @brief Add flags
+         * @return Reference to self (for method chaining)
+         * @m_since_latest
+         *
+         * Unlike @ref setFlags(), ORs the flags with existing instead of
+         * replacing them. Useful for preserving the defaults.
+         * @see @ref clearFlags(), @ref addWindowFlags()
+         */
+        Configuration& addFlags(Flags flags) {
+            _flags |= flags;
+            return *this;
+        }
+
+        /**
+         * @brief Clear flags
+         * @return Reference to self (for method chaining)
+         * @m_since_latest
+         *
+         * Unlike @ref setFlags(), ANDs the inverse of @p flags with existing
+         * instead of replacing them. Useful for removing default flags.
+         * @see @ref addFlags(), @ref clearWindowFlags()
+         */
+        Configuration& clearFlags(Flags flags) {
+            _flags &= ~flags;
+            return *this;
+        }
+
+        /** @todo drop all Sdl2Application:: prefixes for WindowFlags below
+            once the deprecated enum is gone */
+
+        /**
+         * @brief Window flags
+         *
+         * @see @ref flags()
+         */
+        Sdl2Application::WindowFlags windowFlags() const {
+            return _windowFlags;
+        }
 
         /**
          * @brief Set window flags
          * @return Reference to self (for method chaining)
+         * @m_since_latest
          *
          * Default are none. To avoid clearing default flags by accident,
          * prefer to use @ref addWindowFlags() and @ref clearWindowFlags()
          * instead.
+         * @see @ref setFlags(), @ref Sdl2Application::addWindowFlags(),
+         *      @ref Sdl2Application::clearWindowFlags()
          */
-        Configuration& setWindowFlags(WindowFlags flags) {
+        Configuration& setWindowFlags(Sdl2Application::WindowFlags flags) {
             _windowFlags = flags;
             return *this;
         }
@@ -2693,13 +3042,14 @@ class Sdl2Application::Configuration {
         /**
          * @brief Add window flags
          * @return Reference to self (for method chaining)
-         * @m_since{2020,06}
+         * @m_since_latest
          *
          * Unlike @ref setWindowFlags(), ORs the flags with existing instead of
          * replacing them. Useful for preserving the defaults.
-         * @see @ref clearWindowFlags()
+         * @see @ref clearWindowFlags(), @ref addFlags(),
+         *      @ref Sdl2Application::addWindowFlags()
          */
-        Configuration& addWindowFlags(WindowFlags flags) {
+        Configuration& addWindowFlags(Sdl2Application::WindowFlags flags) {
             _windowFlags |= flags;
             return *this;
         }
@@ -2707,17 +3057,103 @@ class Sdl2Application::Configuration {
         /**
          * @brief Clear window flags
          * @return Reference to self (for method chaining)
-         * @m_since{2020,06}
+         * @m_since_latest
          *
          * Unlike @ref setWindowFlags(), ANDs the inverse of @p flags with
          * existing instead of replacing them. Useful for removing default
          * flags.
-         * @see @ref addWindowFlags()
+         * @see @ref addWindowFlags(), @ref clearFlags(),
+         *      @ref Sdl2Application::clearWindowFlags()
          */
-        Configuration& clearWindowFlags(WindowFlags flags) {
+        Configuration& clearWindowFlags(Sdl2Application::WindowFlags flags) {
             _windowFlags &= ~flags;
             return *this;
         }
+
+        #ifdef MAGNUM_BUILD_DEPRECATED
+        /**
+         * @brief @copybrief setWindowFlags(Sdl2Application::WindowFlags)
+         * @m_deprecated_since_latest Use
+         *      @ref setWindowFlags(Sdl2Application::WindowFlags) instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH /* MSVC warns for WindowFlags use */
+        CORRADE_DEPRECATED("use setWindowFlags(Sdl2Application::WindowFlags) or setFlags() instead") Configuration& setWindowFlags(WindowFlags flags) {
+            /* If a deprecated flag is used overwrite the _flags as well. If a
+               deprecated flag isn't used, don't touch _flags at all to not
+               have inconsistent behavior on non-deprecated builds. The
+               Flags(Flag::Contextless) is here because otherwise the
+               CORRADE_ENUMSET_OPERATORS() definition would need to be before
+               this function, meaning it'd have to be deinlined. Not worth it
+               for deprecated code. */
+            if(const Flags deprecatedFlags = Flags(Uint32(flags)) & (Flags(Flag::Contextless)|Flag::OpenGL
+                #ifndef CORRADE_TARGET_EMSCRIPTEN
+                |Flag::Vulkan
+                #endif
+            )) {
+                _flags = deprecatedFlags;
+                /* Clear from the flags as the windowFlags() return type
+                   doesn't have the deprecated values anymore and thus it makes
+                   no sense to keep them there as well */
+                flags &= ~WindowFlags(Uint32(deprecatedFlags));
+            }
+            _windowFlags = Sdl2Application::WindowFlags(Uint32(flags));
+            return *this;
+        }
+        CORRADE_IGNORE_DEPRECATED_POP
+
+        /**
+         * @brief @copybrief addWindowFlags(Sdl2Application::WindowFlags)
+         * @m_deprecated_since_latest Use
+         *      @ref addWindowFlags(Sdl2Application::WindowFlags) instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH /* MSVC warns for WindowFlags use */
+        CORRADE_DEPRECATED("use addWindowFlags(Sdl2Application::WindowFlags) or addFlags() instead") Configuration& addWindowFlags(WindowFlags flags) {
+            /* Add to the _flags as well. Compared to setWindowFlags() this
+               won't have different behavior on non-deprecated builds so an
+               if() isn't needed. The Flags(Flag::Contextless) is here because
+               otherwise the CORRADE_ENUMSET_OPERATORS() definition would need
+               to be before this function, meaning it'd have to be deinlined.
+               Not worth it for deprecated code. */
+            constexpr Flags deprecatedFlags = Flags(Flag::Contextless)|Flag::OpenGL
+                #ifndef CORRADE_TARGET_EMSCRIPTEN
+                |Flag::Vulkan
+                #endif
+                ;
+            _flags |= Flags(Uint32(flags)) & deprecatedFlags;
+            /* Skip the deprecated flags as the windowFlags() return type
+               doesn't have the deprecated values anymore and thus it makes no
+               sense to keep them there as well */
+            _windowFlags |= Sdl2Application::WindowFlags(Uint32(flags) & ~Uint32(deprecatedFlags));
+            return *this;
+        }
+        CORRADE_IGNORE_DEPRECATED_POP
+
+        /**
+         * @brief @copybrief clearWindowFlags(Sdl2Application::WindowFlags)
+         * @m_deprecated_since_latest Use
+         *      @ref clearWindowFlags(Sdl2Application::WindowFlags) instead.
+         */
+        CORRADE_IGNORE_DEPRECATED_PUSH /* MSVC warns for WindowFlags use */
+        CORRADE_DEPRECATED("use clearWindowFlags(Sdl2Application::WindowFlags) or clearFlags() instead") Configuration& clearWindowFlags(WindowFlags flags) {
+            /* Clear from the _flags as well. Compared to setWindowFlags() this
+               won't have different behavior on non-deprecated builds so an
+               if() isn't needed. The Flags(Flag::Contextless) is here because
+               otherwise the CORRADE_ENUMSET_OPERATORS() definition would need
+               to be before this function, meaning it'd have to be deinlined.
+               Not worth it for deprecated code. */
+            _flags &= ~(Flags(Uint32(flags)) & (Flags(Flag::Contextless)|Flag::OpenGL
+                #ifndef CORRADE_TARGET_EMSCRIPTEN
+                |Flag::Vulkan
+                #endif
+            ));
+            /* Compared to setWindowFlags() / addWindowFlags() above no special
+               handling is needed as the deprecated flags shouldn't be in
+               _windowFlags in the first place */
+            _windowFlags &= ~Sdl2Application::WindowFlags(Uint32(flags));
+            return *this;
+        }
+        CORRADE_IGNORE_DEPRECATED_POP
+        #endif
 
     private:
         #if !defined(CORRADE_TARGET_EMSCRIPTEN) && !defined(CORRADE_TARGET_IOS)
@@ -2725,9 +3161,17 @@ class Sdl2Application::Configuration {
         #endif
         Vector2i _size;
         DpiScalingPolicy _dpiScalingPolicy;
-        WindowFlags _windowFlags;
+        Flags _flags;
+        Sdl2Application::WindowFlags _windowFlags;
         Vector2 _dpiScaling;
 };
+
+CORRADE_ENUMSET_OPERATORS(Sdl2Application::Configuration::Flags)
+#ifdef MAGNUM_BUILD_DEPRECATED
+CORRADE_IGNORE_DEPRECATED_PUSH
+CORRADE_ENUMSET_OPERATORS(Sdl2Application::Configuration::WindowFlags)
+CORRADE_IGNORE_DEPRECATED_POP
+#endif
 
 /**
 @brief Exit event
@@ -2806,7 +3250,7 @@ class Sdl2Application::ViewportEvent {
          */
         Vector2i windowSize() const { return _windowSize; }
 
-        #if defined(MAGNUM_TARGET_GL) || defined(DOXYGEN_GENERATING_OUTPUT)
+        #ifdef MAGNUM_TARGET_GL
         /**
          * @brief Framebuffer size
          *
@@ -3816,8 +4260,6 @@ typedef BasicScreenedApplication<Sdl2Application> ScreenedApplication;
 #undef MAGNUM_APPLICATION_MAIN
 #endif
 #endif
-
-CORRADE_ENUMSET_OPERATORS(Sdl2Application::Configuration::WindowFlags)
 
 }}
 

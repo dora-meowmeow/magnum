@@ -30,6 +30,7 @@
 #include <Corrade/Containers/GrowableArray.h>
 #include <Corrade/Containers/Pair.h>
 #include <Corrade/Containers/Triple.h>
+#include <Corrade/Utility/Memory.h>
 
 #include "Magnum/Math/Matrix3.h"
 #include "Magnum/Math/Matrix4.h"
@@ -103,6 +104,33 @@ for(std::size_t i = 0; i != meshesMaterials.size(); ++i) {
 
 Trade::MeshData concatenated = MeshTools::concatenate(flattenedMeshes);
 /* [absoluteFieldTransformations3D-mesh-concatenate] */
+}
+
+{
+/* [absoluteTransformations3DInto] */
+Containers::Array<Int> parents = DOXYGEN_ELLIPSIS({});
+Containers::Array<Matrix4> transformations = DOXYGEN_ELLIPSIS({});
+
+/* out.exceptPrefix(1) then contains absolute transformations */
+Containers::Array<Matrix4> out =
+    Utility::allocateAligned<Matrix4, 64>(NoInit, parents.size() + 1);
+SceneTools::absoluteTransformations3DInto(transformations, parents, out);
+/* [absoluteTransformations3DInto] */
+}
+
+{
+/* [absoluteTransformations3DInto-in-place] */
+Containers::Array<Int> parents = DOXYGEN_ELLIPSIS({});
+Containers::Array<Matrix4> transformations =
+    Utility::allocateAligned<Matrix4, 64>(NoInit, parents.size() + 1);
+
+/* Fill transformations.exceptPrefix(1) with input transformations first */
+DOXYGEN_ELLIPSIS()
+
+/* Then convert them to absolute */
+SceneTools::absoluteTransformations3DInto(
+    transformations.exceptPrefix(1), parents, transformations);
+/* [absoluteTransformations3DInto-in-place] */
 }
 
 {

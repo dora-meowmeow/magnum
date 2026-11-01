@@ -263,6 +263,20 @@ const struct {
 
 const struct {
     const char* name;
+    std::size_t offset;
+    UnsignedInt baseInstance;
+    bool meshView;
+} DrawInstancedAttributeSingleInstanceData[]{
+    {"", 16, 0, false},
+    {"mesh view", 16, 0, true},
+    #ifndef MAGNUM_TARGET_GLES2
+    {"base instance", 0, 16, false},
+    {"base instance, mesh view", 0, 16, true},
+    #endif
+};
+
+const struct {
+    const char* name;
     bool vertexId;
     bool drawId;
     Vector4 values[4];
@@ -880,8 +894,10 @@ MeshGLTest::MeshGLTest() {
               #ifndef MAGNUM_TARGET_GLES
               &MeshGLTest::addVertexBufferInstancedDouble,
               #endif
-              &MeshGLTest::resetDivisorAfterInstancedDraw,
-              &MeshGLTest::drawInstancedAttributeSingleInstance});
+              &MeshGLTest::resetDivisorAfterInstancedDraw});
+
+    addInstancedTests({&MeshGLTest::drawInstancedAttributeSingleInstance},
+        Containers::arraySize(DrawInstancedAttributeSingleInstanceData));
 
     addInstancedTests({&MeshGLTest::multiDraw,
                        &MeshGLTest::multiDrawSparseArrays,
@@ -1002,12 +1018,7 @@ void MeshGLTest::construct() {
 }
 
 struct FloatShader: AbstractShaderProgram {
-    explicit FloatShader(Containers::StringView type, Containers::StringView conversion
-        /* See the definition for details */
-        #if defined(MAGNUM_TARGET_WEBGL) && defined(MAGNUM_TARGET_GLES2)
-        , bool dummy = false
-        #endif
-    );
+    explicit FloatShader(Containers::StringView type, Containers::StringView conversion, Containers::StringView extension = {});
 };
 
 void MeshGLTest::constructMove() {
@@ -1254,73 +1265,48 @@ struct Checker {
     Framebuffer framebuffer;
 };
 
-FloatShader::FloatShader(Containers::StringView type, Containers::StringView conversion
-    /* WebGL 1 requires that at least one attribute is not instanced. The
-       addVertexBufferInstancedFloat() and drawInstancedAttributeSingleInstance()
-       tests set this to true to add a dummy input (that isn't even present in
-       the mesh) to fix that. */
-    #if defined(MAGNUM_TARGET_WEBGL) && defined(MAGNUM_TARGET_GLES2)
-    , bool dummy
-    #endif
-) {
-    /* We need special version for ES3, because GLSL in ES2 doesn't support
-       rectangle matrices */
-    #ifndef MAGNUM_TARGET_GLES
-    Shader vert(
+FloatShader::FloatShader(Containers::StringView type, Containers::StringView conversion, Containers::StringView extension) {
+    constexpr Version version =
+        #ifndef MAGNUM_TARGET_GLES
         #ifndef CORRADE_TARGET_APPLE
         Version::GL210
         #else
         Version::GL310
         #endif
-        , Shader::Type::Vertex);
-    Shader frag(
-        #ifndef CORRADE_TARGET_APPLE
-        Version::GL210
+        /* We need special version for ES3, because GLSL in ES2 doesn't support
+           rectangle matrices */
+        #elif defined(MAGNUM_TARGET_GLES2)
+        Version::GLES200
         #else
-        Version::GL310
+        Version::GLES300
         #endif
-        , Shader::Type::Fragment);
-    #elif defined(MAGNUM_TARGET_GLES2)
-    Shader vert(Version::GLES200, Shader::Type::Vertex);
-    Shader frag(Version::GLES200, Shader::Type::Fragment);
-    #else
-    Shader vert(Version::GLES300, Shader::Type::Vertex);
-    Shader frag(Version::GLES300, Shader::Type::Fragment);
-    #endif
+        ;
+    Shader vert{version, Shader::Type::Vertex};
+    Shader frag{version, Shader::Type::Fragment};
 
+    if(extension)
+        vert.addSource(extension);
     vert.addSource(Utility::format(
-        #if defined(MAGNUM_TARGET_WEBGL) && defined(MAGNUM_TARGET_GLES2)
-        dummy ?
-            "#if !defined(GL_ES) && __VERSION__ == 120\n"
-            "#define mediump\n"
-            "#endif\n"
-            "#if (defined(GL_ES) && __VERSION__ < 300) || __VERSION__ == 120\n"
-            "#define in attribute\n"
-            "#define out varying\n"
-            "#endif\n"
-            "in mediump {0} value;\n"
-            "in mediump float dummy;\n"
-            "out mediump {0} valueInterpolated;\n"
-            "void main() {{\n"
-            "    valueInterpolated = value;\n"
-            "    gl_PointSize = 1.0;\n"
-            "    gl_Position = vec4(0.0, 0.0, dummy, 1.0);\n"
-            "}}\n" :
-        #endif
-            "#if !defined(GL_ES) && __VERSION__ == 120\n"
-            "#define mediump\n"
-            "#endif\n"
-            "#if (defined(GL_ES) && __VERSION__ < 300) || __VERSION__ == 120\n"
-            "#define in attribute\n"
-            "#define out varying\n"
-            "#endif\n"
-            "in mediump {0} value;\n"
-            "out mediump {0} valueInterpolated;\n"
-            "void main() {{\n"
-            "    valueInterpolated = value;\n"
-            "    gl_PointSize = 1.0;\n"
-            "    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
-            "}}\n",
+        "#if !defined(GL_ES) && __VERSION__ == 120\n"
+        "#define mediump\n"
+        "#endif\n"
+        "#if (defined(GL_ES) && __VERSION__ < 300) || __VERSION__ == 120\n"
+        "#define in attribute\n"
+        "#define out varying\n"
+        "#endif\n"
+        "#ifdef VERTEX_INTERFACE_EXTENSION\n"
+        "VERTEX_INTERFACE_EXTENSION\n"
+        "#endif\n"
+        "in mediump {0} value;\n"
+        "out mediump {0} valueInterpolated;\n"
+        "void main() {{\n"
+        "    valueInterpolated = value;\n"
+        "    gl_PointSize = 1.0;\n"
+        "    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "    #ifdef VERTEX_MAIN_EXTENSION\n"
+        "    VERTEX_MAIN_EXTENSION\n"
+        "    #endif\n"
+        "}}\n",
         type));
     frag.addSource(Utility::format(
         "#if !defined(GL_ES) && __VERSION__ == 120\n"
@@ -1347,25 +1333,19 @@ FloatShader::FloatShader(Containers::StringView type, Containers::StringView con
 
 #ifndef MAGNUM_TARGET_GLES2
 IntegerShader::IntegerShader(const Containers::StringView type) {
-    #ifndef MAGNUM_TARGET_GLES
-    Shader vert(
+    constexpr Version version =
+        #ifndef MAGNUM_TARGET_GLES
         #ifndef CORRADE_TARGET_APPLE
         Version::GL300
         #else
         Version::GL310
         #endif
-        , Shader::Type::Vertex);
-    Shader frag(
-        #ifndef CORRADE_TARGET_APPLE
-        Version::GL300
         #else
-        Version::GL310
+        Version::GLES300
         #endif
-        , Shader::Type::Fragment);
-    #else
-    Shader vert(Version::GLES300, Shader::Type::Vertex);
-    Shader frag(Version::GLES300, Shader::Type::Fragment);
-    #endif
+        ;
+    Shader vert{version, Shader::Type::Vertex};
+    Shader frag{version, Shader::Type::Fragment};
 
     vert.addSource(Utility::format(
         "in mediump {0} value;\n"
@@ -1392,14 +1372,15 @@ IntegerShader::IntegerShader(const Containers::StringView type) {
 
 #ifndef MAGNUM_TARGET_GLES
 DoubleShader::DoubleShader(const Containers::StringView type, const Containers::StringView outputType, const Containers::StringView conversion) {
-    constexpr const Version version =
+    constexpr Version version =
         #ifndef CORRADE_TARGET_APPLE
-        Version::GL300;
+        Version::GL300
         #else
-        Version::GL400;
+        Version::GL400
         #endif
+        ;
     Shader vert{version, Shader::Type::Vertex};
-    Shader frag(version, Shader::Type::Fragment);
+    Shader frag{version, Shader::Type::Fragment};
 
     vert.addSource(Utility::format(
         "#extension GL_ARB_vertex_attrib_64bit: require\n"
@@ -2385,25 +2366,19 @@ struct MultipleShader: AbstractShaderProgram {
 };
 
 MultipleShader::MultipleShader() {
-    #ifndef MAGNUM_TARGET_GLES
-    Shader vert(
+    constexpr Version version =
+        #ifndef MAGNUM_TARGET_GLES
         #ifndef CORRADE_TARGET_APPLE
         Version::GL210
         #else
         Version::GL310
         #endif
-        , Shader::Type::Vertex);
-    Shader frag(
-        #ifndef CORRADE_TARGET_APPLE
-        Version::GL210
         #else
-        Version::GL310
+        Version::GLES200
         #endif
-        , Shader::Type::Fragment);
-    #else
-    Shader vert(Version::GLES200, Shader::Type::Vertex);
-    Shader frag(Version::GLES200, Shader::Type::Fragment);
-    #endif
+        ;
+    Shader vert{version, Shader::Type::Vertex};
+    Shader frag{version, Shader::Type::Fragment};
 
     vert.addSource(
         "#if !defined(GL_ES) && __VERSION__ == 120\n"
@@ -3466,10 +3441,9 @@ void MeshGLTest::setBaseVertexRangeNoExtensionAvailable() {
 #endif
 
 void MeshGLTest::setInstanceCount() {
-    /* Verbatim copy of addVertexBufferFloat() with added extension check and
-       setInstanceCount() call. It would just render three times the same
-       value. I'm too lazy to invent proper test case, so I'll just check that
-       it didn't generate any error and rendered something */
+    /* Like addVertexBufferFloat() but with the attribute being instanced, and
+       additional extension checks. This verifies the setInstanceCount() API,
+       tests for instanced attributes are in addVertexBufferInstanced*(). */
 
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
@@ -3490,18 +3464,32 @@ void MeshGLTest::setInstanceCount() {
 
     typedef Attribute<0, Float> Attribute;
 
-    const Float data[] = { 0.0f, -0.7f, Math::unpack<Float, UnsignedByte>(96) };
+    /* If the setInstanceCount() call is correctly done, it should render three
+       instances over each other with only the third one getting the right
+       value */
+    const Float data[]{
+        0.0f, /* Offset */
+        0.3f, -0.7f, /* First two instances */
+        Math::unpack<Float, UnsignedByte>(96)
+    };
     Buffer buffer;
     buffer.setData(data, BufferUsage::StaticDraw);
 
     Mesh mesh;
     mesh.setBaseVertex(1)
         .setInstanceCount(3)
-        .addVertexBuffer(buffer, 4, Attribute());
+        .addVertexBufferInstanced(buffer, 1, 4, Attribute{});
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 
-    const auto value = Checker(FloatShader("float", "vec4(valueInterpolated, 0.0, 0.0, 0.0)"),
+    const auto value = Checker(FloatShader{"float", "vec4(valueInterpolated, 0.0, 0.0, 0.0)",
+        /* WebGL 1 requires that at least one attribute is not instanced. Add
+           a dummy input (that isn't even present in the mesh) to fix that. */
+        #if defined(MAGNUM_TARGET_WEBGL) && defined(MAGNUM_TARGET_GLES2)
+        "#define VERTEX_INTERFACE_EXTENSION in mediump float dummy;\n"
+        "#define VERTEX_MAIN_EXTENSION gl_Position.y = dummy;\n"
+        #endif
+    },
         #ifndef MAGNUM_TARGET_GLES2
         RenderbufferFormat::RGBA8,
         #else
@@ -3519,10 +3507,8 @@ void MeshGLTest::setInstanceCount() {
 
 #ifndef MAGNUM_TARGET_GLES2
 void MeshGLTest::setInstanceCountBaseInstance() {
-    /* Verbatim copy of setInstanceCount() with additional extension check and
-       setBaseInstance() call. It would just render three times the same
-       value. I'm too lazy to invent proper test case, so I'll just check that
-       it didn't generate any error and rendered something */
+    /* Expansion of setInstanceCount() with extra instance data at the front
+       and more extension checks */
 
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
@@ -3540,15 +3526,23 @@ void MeshGLTest::setInstanceCountBaseInstance() {
 
     typedef Attribute<0, Float> Attribute;
 
-    const Float data[] = { 0.0f, -0.7f, Math::unpack<Float, UnsignedByte>(96) };
+    /* If the setInstanceCount() and setBaseInstance() calls are correctly
+       done, it should skip the first 16 values and render three instances over
+       each other with only the third one getting the right value */
+    const Float data[]{
+        0.0f, /* Offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, /* Instance offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        0.3f, -0.7f, /* First two instances */
+        Math::unpack<Float, UnsignedByte>(96) };
     Buffer buffer;
     buffer.setData(data, BufferUsage::StaticDraw);
 
     Mesh mesh;
     mesh.setBaseVertex(1)
         .setInstanceCount(3)
-        .setBaseInstance(72)
-        .addVertexBuffer(buffer, 4, Attribute());
+        .setBaseInstance(16)
+        .addVertexBufferInstanced(buffer, 1, 4, Attribute{});
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 
@@ -3586,10 +3580,7 @@ void MeshGLTest::setInstanceCountBaseInstanceNoExtensionAvailable() {
 #endif
 
 void MeshGLTest::setInstanceCountIndexed() {
-    /* Verbatim copy of setIndexBuffer() with added extension check and
-       setInstanceCount() call. It would just render three times the same
-       value. I'm too lazy to invent proper test case, so I'll just check that
-       it didn't generate any error and rendered something */
+    /* Basically a merge of setInstanceCount() and setIndexBuffer() */
 
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
@@ -3608,8 +3599,23 @@ void MeshGLTest::setInstanceCountIndexed() {
     #endif
     #endif
 
+    /* Only the position and normal is used from indexedVertexData, texture
+       coordinates from the instance data instead */
     Buffer vertices;
     vertices.setData(indexedVertexData, BufferUsage::StaticDraw);
+
+    /* If the setInstanceCount() call is correctly done, it should render three
+       instances over each other with only the third one getting the right
+       value for the texture coordinates */
+    const Float instanceData[]{
+        0.0f, /* Offset */
+        1.0f, -0.5f, /* First two instances */
+        -0.5f, 1.0f,
+        Math::unpack<Float, UnsignedByte>(97),
+            Math::unpack<Float, UnsignedByte>(28),
+    };
+    Buffer instances;
+    instances.setData(instanceData);
 
     constexpr UnsignedShort indexData[] = { 2, 1, 0 };
     Buffer indices{Buffer::TargetHint::ElementArray};
@@ -3617,8 +3623,11 @@ void MeshGLTest::setInstanceCountIndexed() {
 
     Mesh mesh;
     mesh.setInstanceCount(3)
-        .addVertexBuffer(vertices, 1*4,  MultipleShader::Position(),
-                         MultipleShader::Normal(), MultipleShader::TextureCoordinates())
+        .addVertexBuffer(vertices, 1*4,
+            MultipleShader::Position{},
+            MultipleShader::Normal{},
+            sizeof(MultipleShader::TextureCoordinates::Type))
+        .addVertexBufferInstanced(instances, 1, 4, MultipleShader::TextureCoordinates{})
         .setIndexBuffer(indices, 2, MeshIndexType::UnsignedShort);
 
     MAGNUM_VERIFY_NO_GL_ERROR();
@@ -3641,10 +3650,8 @@ void MeshGLTest::setInstanceCountIndexed() {
 
 #ifndef MAGNUM_TARGET_GLES2
 void MeshGLTest::setInstanceCountIndexedBaseInstance() {
-    /* Verbatim copy of setInstanceCountIndexed() with additional extension
-       check and setBaseInstance() call. It would just render three times the
-       same value. I'm too lazy to invent proper test case, so I'll just check
-       that it didn't generate any error and rendered something */
+    /* Expansion of setInstanceCountIndexed() with extra instance data at the
+       front and more extension checks */
 
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
@@ -3660,8 +3667,28 @@ void MeshGLTest::setInstanceCountIndexedBaseInstance() {
         CORRADE_SKIP(Extensions::WEBGL::draw_instanced_base_vertex_base_instance::string() << "is not supported.");
     #endif
 
+    /* Only the position and normal is used from indexedVertexData, texture
+       coordinates from the instance data instead */
     Buffer vertices;
     vertices.setData(indexedVertexData, BufferUsage::StaticDraw);
+
+    /* If the setInstanceCount() and setBaseInstance() calls are correctly
+       done, it should skip the first 16 values and render three instances over
+       each other with only the third one getting the right value for the
+       texture coordinates */
+    const Float instanceData[]{
+        0.0f, /* Offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, /* Instance offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        1.0f, -0.5f, /* First two instances */
+        -0.5f, 1.0f,
+        Math::unpack<Float, UnsignedByte>(97),
+            Math::unpack<Float, UnsignedByte>(28),
+    };
+    Buffer instances;
+    instances.setData(instanceData);
 
     constexpr UnsignedShort indexData[] = { 2, 1, 0 };
     Buffer indices{Buffer::TargetHint::ElementArray};
@@ -3669,9 +3696,12 @@ void MeshGLTest::setInstanceCountIndexedBaseInstance() {
 
     Mesh mesh;
     mesh.setInstanceCount(3)
-        .setBaseInstance(72)
-        .addVertexBuffer(vertices, 1*4,  MultipleShader::Position(),
-                         MultipleShader::Normal(), MultipleShader::TextureCoordinates())
+        .setBaseInstance(16)
+        .addVertexBuffer(vertices, 1*4,
+            MultipleShader::Position{},
+            MultipleShader::Normal{},
+            sizeof(MultipleShader::TextureCoordinates::Type))
+        .addVertexBufferInstanced(instances, 1, 4, MultipleShader::TextureCoordinates{})
         .setIndexBuffer(indices, 2, MeshIndexType::UnsignedShort);
 
     MAGNUM_VERIFY_NO_GL_ERROR();
@@ -3715,10 +3745,8 @@ void MeshGLTest::setInstanceCountIndexedBaseInstanceNoExtensionAvailable() {
 
 #ifndef MAGNUM_TARGET_GLES2
 void MeshGLTest::setInstanceCountIndexedBaseVertex() {
-    /* Verbatim copy of setBaseVertex() with additional extension check and
-       setInstanceCount() call. It would just render three times the same
-       value. I'm too lazy to invent proper test case, so I'll just check
-       that it didn't generate any error and rendered something */
+    /* Copy of setInstanceCountIndexed() with different vertex data like in
+       setBaseVertex() */
 
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
@@ -3743,8 +3771,23 @@ void MeshGLTest::setInstanceCountIndexedBaseVertex() {
         CORRADE_SKIP(Extensions::WEBGL::draw_instanced_base_vertex_base_instance::string() << "is not supported.");
     #endif
 
+    /* Only the position and normal is used from indexedVertexData, texture
+       coordinates from the instance data instead */
     Buffer vertices;
     vertices.setData(indexedVertexDataBaseVertex, BufferUsage::StaticDraw);
+
+    /* If the setInstanceCount() call is correctly done, it should render three
+       instances over each other with only the third one getting the right
+       value for the texture coordinates */
+    const Float instanceData[]{
+        0.0f, /* Offset */
+        1.0f, -0.5f, /* First two instances */
+        -0.5f, 1.0f,
+        Math::unpack<Float, UnsignedByte>(97),
+            Math::unpack<Float, UnsignedByte>(28),
+    };
+    Buffer instances;
+    instances.setData(instanceData);
 
     constexpr UnsignedShort indexData[] = { 2, 1, 0 };
     Buffer indices{Buffer::TargetHint::ElementArray};
@@ -3753,8 +3796,11 @@ void MeshGLTest::setInstanceCountIndexedBaseVertex() {
     Mesh mesh;
     mesh.setBaseVertex(2)
         .setInstanceCount(3)
-        .addVertexBuffer(vertices, 2*4,  MultipleShader::Position(),
-                         MultipleShader::Normal(), MultipleShader::TextureCoordinates())
+        .addVertexBuffer(vertices, 2*4,
+            MultipleShader::Position{},
+            MultipleShader::Normal{},
+            sizeof(MultipleShader::TextureCoordinates::Type))
+        .addVertexBufferInstanced(instances, 1, 4, MultipleShader::TextureCoordinates{})
         .setIndexBuffer(indices, 2, MeshIndexType::UnsignedShort);
 
     MAGNUM_VERIFY_NO_GL_ERROR();
@@ -3808,10 +3854,8 @@ void MeshGLTest::setInstanceCountIndexedBaseVertexNoExtensionAvailable() {
 
 #ifndef MAGNUM_TARGET_GLES2
 void MeshGLTest::setInstanceCountIndexedBaseVertexBaseInstance() {
-    /* Verbatim copy of setInstanceCountBaseVertex() with added extension check
-       and setBaseInstance() call. It would just render three times the same
-       value. I'm too lazy to invent proper test case, so I'll just check
-       that it didn't generate any error and rendered something */
+    /* Copy of setInstanceCountIndexedBaseVertex() with extra instance data at
+       the front and more extension checks */
 
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
@@ -3829,8 +3873,27 @@ void MeshGLTest::setInstanceCountIndexedBaseVertexBaseInstance() {
         CORRADE_SKIP(Extensions::WEBGL::draw_instanced_base_vertex_base_instance::string() << "is not supported.");
     #endif
 
+    /* Only the position and normal is used from indexedVertexData, texture
+       coordinates from the instance data instead */
     Buffer vertices;
     vertices.setData(indexedVertexDataBaseVertex, BufferUsage::StaticDraw);
+
+    /* If the setInstanceCount() call is correctly done, it should render three
+       instances over each other with only the third one getting the right
+       value for the texture coordinates */
+    const Float instanceData[]{
+        0.0f, /* Offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, /* Instance offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
+        1.0f, -0.5f, /* First two instances */
+        -0.5f, 1.0f,
+        Math::unpack<Float, UnsignedByte>(97),
+            Math::unpack<Float, UnsignedByte>(28),
+    };
+    Buffer instances;
+    instances.setData(instanceData);
 
     constexpr UnsignedShort indexData[] = { 2, 1, 0 };
     Buffer indices{Buffer::TargetHint::ElementArray};
@@ -3839,9 +3902,12 @@ void MeshGLTest::setInstanceCountIndexedBaseVertexBaseInstance() {
     Mesh mesh;
     mesh.setBaseVertex(2)
         .setInstanceCount(3)
-        .setBaseInstance(72)
-        .addVertexBuffer(vertices, 2*4,  MultipleShader::Position(),
-                         MultipleShader::Normal(), MultipleShader::TextureCoordinates())
+        .setBaseInstance(16)
+        .addVertexBuffer(vertices, 2*4,
+            MultipleShader::Position{},
+            MultipleShader::Normal{},
+            sizeof(MultipleShader::TextureCoordinates::Type))
+        .addVertexBufferInstanced(instances, 1, 4, MultipleShader::TextureCoordinates{})
         .setIndexBuffer(indices, 2, MeshIndexType::UnsignedShort);
 
     MAGNUM_VERIFY_NO_GL_ERROR();
@@ -3924,13 +3990,14 @@ void MeshGLTest::addVertexBufferInstancedFloat() {
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 
-    const auto value = Checker(FloatShader("float", "vec4(valueInterpolated, 0.0, 0.0, 0.0)"
+    const auto value = Checker(FloatShader{"float", "vec4(valueInterpolated, 0.0, 0.0, 0.0)",
         /* WebGL 1 requires that at least one attribute is not instanced. Add
            a dummy input (that isn't even present in the mesh) to fix that. */
         #if defined(MAGNUM_TARGET_WEBGL) && defined(MAGNUM_TARGET_GLES2)
-        , /* dummy */ true
+        "#define VERTEX_INTERFACE_EXTENSION in mediump float dummy;\n"
+        "#define VERTEX_MAIN_EXTENSION gl_Position.y = dummy;\n"
         #endif
-    ),
+    },
         #ifndef MAGNUM_TARGET_GLES2
         RenderbufferFormat::RGBA8,
         #else
@@ -4109,6 +4176,9 @@ void MeshGLTest::resetDivisorAfterInstancedDraw() {
 }
 
 void MeshGLTest::drawInstancedAttributeSingleInstance() {
+    auto&& data = DrawInstancedAttributeSingleInstanceData[testCaseInstanceId()];
+    setTestCaseDescription(data.name);
+
     #ifndef MAGNUM_TARGET_GLES
     if(!Context::current().isExtensionSupported<Extensions::ARB::draw_instanced>())
         CORRADE_SKIP(Extensions::ARB::draw_instanced::string() << "is not supported.");
@@ -4126,15 +4196,33 @@ void MeshGLTest::drawInstancedAttributeSingleInstance() {
     #endif
     #endif
 
+    #ifndef MAGNUM_TARGET_GLES2
+    if(data.baseInstance) {
+        #ifndef MAGNUM_TARGET_GLES
+        if(!Context::current().isExtensionSupported<Extensions::ARB::base_instance>())
+            CORRADE_SKIP(Extensions::ARB::base_instance::string() << "is not supported.");
+        #elif !defined(MAGNUM_TARGET_WEBGL)
+        if(!Context::current().isExtensionSupported<Extensions::EXT::base_instance>() &&
+        !Context::current().isExtensionSupported<Extensions::ANGLE::base_vertex_base_instance>())
+            CORRADE_SKIP("Neither" << Extensions::EXT::base_instance::string() << "nor" << Extensions::ANGLE::base_vertex_base_instance::string() << "is supported.");
+        #else
+        if(!Context::current().isExtensionSupported<Extensions::WEBGL::draw_instanced_base_vertex_base_instance>())
+            CORRADE_SKIP(Extensions::WEBGL::draw_instanced_base_vertex_base_instance::string() << "is not supported.");
+        #endif
+    }
+    #endif
+
     typedef Attribute<0, Float> Attribute;
 
-    const Float data[]{
+    const Float instanceData[]{
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, /* Instance offset */
+        0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f, 0.1f, 0.2f,
         Math::unpack<Float, UnsignedByte>(96)
     };
     Buffer buffer;
     /* The ANGLE validation error can be only reproduced with DynamicDraw used
        here, not StaticDraw. Interesting. */
-    buffer.setData(data, BufferUsage::DynamicDraw);
+    buffer.setData(Containers::arrayView(instanceData).exceptPrefix(data.offset), BufferUsage::DynamicDraw);
 
     Renderbuffer renderbuffer;
     renderbuffer.setStorage(
@@ -4148,11 +4236,12 @@ void MeshGLTest::drawInstancedAttributeSingleInstance() {
     framebuffer.attachRenderbuffer(Framebuffer::ColorAttachment{0}, renderbuffer)
                .bind();
 
-    FloatShader shader{"float", "vec4(valueInterpolated, 0.0, 0.0, 0.0)"
+    FloatShader shader{"float", "vec4(valueInterpolated, 0.0, 0.0, 0.0)",
         /* WebGL 1 requires that at least one attribute is not instanced. Add
            a dummy input (that isn't even present in the mesh) to fix that. */
         #if defined(MAGNUM_TARGET_WEBGL) && defined(MAGNUM_TARGET_GLES2)
-        , /* dummy */ true
+        "#define VERTEX_INTERFACE_EXTENSION in mediump float dummy;\n"
+        "#define VERTEX_MAIN_EXTENSION gl_Position.y = dummy;\n"
         #endif
     };
 
@@ -4162,12 +4251,29 @@ void MeshGLTest::drawInstancedAttributeSingleInstance() {
        instanced. Drawing it 16 times should always draw 96 with no error.
        On ANGLE w/o the "angle-instanced-attributes-always-draw-instanced"
        workaround this would trigger a validation error where it would complain
-       that the 4-byte buffer is not large enough to draw 16 vertices. */
-    Mesh mesh;
-    mesh.addVertexBufferInstanced(buffer, 1, 0, Attribute{})
-        .setPrimitive(MeshPrimitive::Points)
-        .setCount(16);
-    shader.draw(mesh);
+       that the 4-byte buffer is not large enough to draw 16 vertices.
+       Additionally, if base instance is specified, the draw should be
+       instanced as well, as otherwise the information about base instance will
+       not get correctly passed to the shader. */
+    Mesh mesh{MeshPrimitive::Points};
+    mesh.addVertexBufferInstanced(buffer, 1, 0, Attribute{});
+    MeshView meshView{mesh};
+    if(data.meshView)
+        meshView.setCount(16);
+    else
+        mesh.setCount(16);
+    #ifndef MAGNUM_TARGET_GLES2
+    if(data.baseInstance) {
+        if(data.meshView)
+            meshView.setBaseInstance(data.baseInstance);
+        else
+            mesh.setBaseInstance(data.baseInstance);
+    }
+    #endif
+    if(data.meshView)
+        shader.draw(meshView);
+    else
+        shader.draw(mesh);
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 

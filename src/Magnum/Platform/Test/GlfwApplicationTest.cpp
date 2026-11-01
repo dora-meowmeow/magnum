@@ -37,6 +37,10 @@
 #include "Magnum/Trade/AbstractImporter.h"
 #include "Magnum/Trade/ImageData.h"
 
+#ifdef MAGNUM_TARGET_GL
+#include "Magnum/GL/DefaultFramebuffer.h"
+#endif
+
 namespace Magnum { namespace Platform {
 
 /* These cannot be in an anonymous namespace as enumSetDebugOutput() / Key
@@ -298,10 +302,16 @@ struct GlfwApplicationTest: Platform::Application {
     }
 
     void drawEvent() override {
-        Debug{} << "draw";
+        Debug{} << "draw event";
+        #ifdef MAGNUM_TARGET_GL
+        if(!_contextless)
+            GL::defaultFramebuffer.clear(GL::FramebufferClear::Color);
+        #endif
 
+        #ifdef MAGNUM_TARGET_GL
         if(!_contextless)
             swapBuffers();
+        #endif
 
         /* Invalid keys are tested in the constructor */
         if(isKeyPressed(Key::M))
@@ -311,53 +321,7 @@ struct GlfwApplicationTest: Platform::Application {
             redraw();
     }
 
-    void keyPressEvent(KeyEvent& event) override {
-        Debug{} << "key press:" << event.key() << int(event.key()) << event.keyName() << "scancode:" << event.scanCode() << event.modifiers()
-            #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR >= 303
-            << "converted:" << keyToScanCode(event.key())
-            #endif
-            ;
-
-        if(event.key() == Key::F1) {
-            Debug{} << "starting text input";
-            startTextInput();
-        } else if(event.key() == Key::F2) {
-            _redraw = !_redraw;
-            Debug{} << "redrawing" << (_redraw ? "enabled" : "disabled");
-            if(_redraw)
-                redraw();
-        } else if(event.key() == Key::V && !event.modifiers()) {
-            _vsync = !_vsync;
-            Debug{} << "vsync" << (_vsync? "on" : "off");
-            setSwapInterval(_vsync ? 1 : 0);
-        } else if(event.key() == Key::C && event.modifiers() == Modifier::Ctrl) {
-            Debug{} << "Setting clipboard contents";
-            setClipboardText("this text shouldn't have an exclamation at the end!!"_s.exceptSuffix(2));
-        } else if(event.key() == Key::V && event.modifiers() == Modifier::Ctrl) {
-            Debug{} << "Clipboard contents:" << clipboardText();
-        } else if(event.key() == Key::Esc) {
-            Debug{} << "stopping text input";
-            stopTextInput();
-        } else if(event.key() == Key::T) {
-            Debug{} << "setting window title";
-            setWindowTitle("This is a UTF-8 Window Title™ and it should have no exclamation mark!!"_s.exceptSuffix(2));
-        } else if(event.key() == Key::S) {
-            Debug{} << "setting window size, which should trigger a viewport event";
-            setWindowSize(Vector2i{300, 200});
-        } else if(event.key() == Key::W) {
-            Debug{} << "setting max window size, which should trigger a viewport event if the size changes";
-            setMaxWindowSize(Vector2i{700, 500});
-        } else if(event.key() == Key::H) {
-            Debug{} << "toggling hand cursor";
-            setCursor(cursor() == Cursor::Arrow ? Cursor::Hand : Cursor::Arrow);
-        } else if(event.key() == Key::L) {
-            Debug{} << "toggling locked mouse";
-            setCursor(cursor() == Cursor::Arrow ? Cursor::HiddenLocked : Cursor::Arrow);
-        } else if(event.key() == Key::X) {
-            Debug{} << "requesting an exit with code 5";
-            exit(5);
-        }
-    }
+    void keyPressEvent(KeyEvent& event) override;
 
     void keyReleaseEvent(KeyEvent& event) override {
         Debug{} << "key release:" << event.key() << int(event.key()) << event.keyName() << "scancode:" << event.scanCode() << event.modifiers()
@@ -413,9 +377,13 @@ struct GlfwApplicationTest: Platform::Application {
     #endif
 
     private:
-        bool _contextless = true;
+        #ifdef MAGNUM_TARGET_GL
+        bool _contextless;
+        #endif
         bool _redraw = false;
+        #ifdef MAGNUM_TARGET_GL
         bool _vsync = false;
+        #endif
 };
 
 GlfwApplicationTest::GlfwApplicationTest(const Arguments& arguments): Platform::Application{arguments, NoCreate} {
@@ -423,7 +391,12 @@ GlfwApplicationTest::GlfwApplicationTest(const Arguments& arguments): Platform::
     args.addOption("dpi-scaling").setHelp("dpi-scaling", "DPI scaled passed via Configuration instead of --magnum-dpi-scaling, to test app overrides")
         .addSkippedPrefix("magnum", "engine-specific options")
         .addBooleanOption("exit-immediately").setHelp("exit-immediately", "exit the application immediately from the constructor, to test that the app doesn't run any event handlers after")
+        .addBooleanOption("fullscreen").setHelp("fullscreen", "fullscreen window")
+        .addBooleanOption("fullscreen-desktop").setHelp("fullscreen-desktop", "fullscreen window at the current desktop resolution")
         .addBooleanOption("borderless").setHelp("borderless", "no window decoration")
+        .addBooleanOption("hidden").setHelp("hidden", "hidden window")
+        .addBooleanOption("maximized").setHelp("maximized", "maximized window")
+        .addBooleanOption("minimized").setHelp("minimized", "minimized window")
         .addBooleanOption("always-on-top").setHelp("always-on-top", "always on top")
         #ifdef MAGNUM_TARGET_GL
         .addBooleanOption("quiet").setHelp("quiet", "like --magnum-log quiet, but specified via a Context::Configuration instead")
@@ -439,19 +412,43 @@ GlfwApplicationTest::GlfwApplicationTest(const Arguments& arguments): Platform::
 
     Configuration conf;
     conf.setTitle("Window title that should have no exclamation mark!!"_s.exceptSuffix(2))
-        .setWindowFlags(Configuration::WindowFlag::Resizable);
-    if(!args.value("dpi-scaling").empty())
-        conf.setSize({800, 600}, args.value<Vector2>("dpi-scaling"));
+        .addWindowFlags(WindowFlag::Resizable);
+    if(const Containers::StringView dpiScaling = args.value<Containers::StringView>("dpi-scaling")) {
+        if(dpiScaling == "default")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Default);
+        #if defined(CORRADE_TARGET_APPLE) || defined(CORRADE_TARGET_UNIX)
+        else if(dpiScaling == "framebuffer")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Framebuffer);
+        #endif
+        #ifndef CORRADE_TARGET_APPLE
+        else if(dpiScaling == "virtual")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Virtual);
+        else if(dpiScaling == "physical")
+            conf.setSize(conf.size(), Configuration::DpiScalingPolicy::Physical);
+        #endif
+        else
+            conf.setSize(conf.size(), args.value<Vector2>("dpi-scaling"));
+    }
+    if(args.isSet("fullscreen"))
+        conf.addWindowFlags(WindowFlag::Fullscreen);
+    if(args.isSet("fullscreen-desktop"))
+        conf.addWindowFlags(WindowFlag::FullscreenDesktop);
     if(args.isSet("borderless"))
-        conf.addWindowFlags(Configuration::WindowFlag::Borderless);
+        conf.addWindowFlags(WindowFlag::Borderless);
+    if(args.isSet("hidden"))
+        conf.addWindowFlags(WindowFlag::Hidden);
+    if(args.isSet("maximized"))
+        conf.addWindowFlags(WindowFlag::Maximized);
+    if(args.isSet("minimized"))
+        conf.addWindowFlags(WindowFlag::Minimized);
     if(args.isSet("always-on-top"))
-        conf.addWindowFlags(Configuration::WindowFlag::AlwaysOnTop);
+        conf.addWindowFlags(WindowFlag::AlwaysOnTop);
     #ifdef MAGNUM_TARGET_GL
     if((_contextless = args.isSet("contextless")))
     #endif
     {
         #ifdef MAGNUM_TARGET_GL
-        conf.addWindowFlags(Configuration::WindowFlag::Contextless);
+        conf.addFlags(Configuration::Flag::Contextless);
         #endif
         create(conf);
     }
@@ -496,6 +493,92 @@ GlfwApplicationTest::GlfwApplicationTest(const Arguments& arguments): Platform::
     {
         Error silenceError{nullptr};
         CORRADE_INTERNAL_ASSERT(!isKeyPressed(Key(0x7fffffff)));
+    }
+}
+
+void GlfwApplicationTest::keyPressEvent(KeyEvent& event) {
+    Debug{} << "key press:" << event.key() << int(event.key()) << event.keyName() << "scancode:" << event.scanCode() << event.modifiers()
+        #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR >= 303
+        << "converted:" << keyToScanCode(event.key())
+        #endif
+        ;
+
+    if(event.key() == Key::F1) {
+        Debug{} << "starting text input";
+        startTextInput();
+    } else if(event.key() == Key::F2) {
+        _redraw = !_redraw;
+        Debug{} << "redrawing" << (_redraw ? "enabled" : "disabled");
+        if(_redraw)
+            redraw();
+    }
+    #ifdef MAGNUM_TARGET_GL
+    else if(event.key() == Key::V && !event.modifiers()) {
+        _vsync = !_vsync;
+        Debug{} << "vsync" << (_vsync? "on" : "off");
+        setSwapInterval(_vsync ? 1 : 0);
+    }
+    #endif
+    else if(event.key() == Key::C && event.modifiers() == Modifier::Ctrl) {
+        Debug{} << "Setting clipboard contents";
+        setClipboardText("this text shouldn't have an exclamation at the end!!"_s.exceptSuffix(2));
+    } else if(event.key() == Key::V && event.modifiers() == Modifier::Ctrl) {
+        Debug{} << "Clipboard contents:" << clipboardText();
+    } else if(event.key() == Key::Esc) {
+        Debug{} << "stopping text input";
+        stopTextInput();
+    } else if(event.key() == Key::R) {
+        Debug{} << "toggling resizable" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Resizable) :
+            addWindowFlags(WindowFlag::Resizable);
+    } else if(event.key() == Key::F) {
+        Debug{} << (event.modifiers() >= Modifier::Ctrl ?
+            "toggling desktop fullscreen" : "toggling fullscreen")
+            << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(event.modifiers() >= Modifier::Ctrl ?
+                WindowFlag::FullscreenDesktop : WindowFlag::Fullscreen) :
+            addWindowFlags(event.modifiers() >= Modifier::Ctrl ?
+                WindowFlag::FullscreenDesktop : WindowFlag::Fullscreen);
+    } else if(event.key() == Key::B) {
+        Debug{} << "toggling borderless" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Borderless) :
+            addWindowFlags(WindowFlag::Borderless);
+    } else if(event.key() == Key::A) {
+        Debug{} << "toggling maximized" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Maximized) :
+            addWindowFlags(WindowFlag::Maximized);
+    } else if(event.key() == Key::I) {
+        Debug{} << "toggling minimized" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::Minimized) :
+            addWindowFlags(WindowFlag::Minimized);
+    } else if(event.key() == Key::O) {
+        Debug{} << "toggling always on top" << (event.modifiers() >= Modifier::Shift ? "off" : "on");
+        event.modifiers() >= Modifier::Shift ?
+            clearWindowFlags(WindowFlag::AlwaysOnTop) :
+            addWindowFlags(WindowFlag::AlwaysOnTop);
+    } else if(event.key() == Key::T) {
+        Debug{} << "setting window title";
+        setWindowTitle("This is a UTF-8 Window Title™ and it should have no exclamation mark!!"_s.exceptSuffix(2));
+    } else if(event.key() == Key::S) {
+        Debug{} << "setting window size, which should trigger a viewport event";
+        setWindowSize(Vector2i{300, 200});
+    } else if(event.key() == Key::W) {
+        Debug{} << "setting max window size, which should trigger a viewport event if the size changes";
+        setMaxWindowSize(Vector2i{700, 500});
+    } else if(event.key() == Key::H) {
+        Debug{} << "toggling hand cursor";
+        setCursor(cursor() == Cursor::Arrow ? Cursor::Hand : Cursor::Arrow);
+    } else if(event.key() == Key::L) {
+        Debug{} << "toggling hidden locked cursor";
+        setCursor(cursor() == Cursor::Arrow ? Cursor::HiddenLocked : Cursor::Arrow);
+    } else if(event.key() == Key::X) {
+        Debug{} << "requesting an exit with code 5";
+        exit(5);
     }
 }
 

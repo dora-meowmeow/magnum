@@ -46,6 +46,9 @@
 
 #ifdef MAGNUM_TARGET_GL
 #include "Magnum/GL/Version.h"
+#if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE)
+#include "Magnum/GL/DefaultFramebuffer.h" /* fixing initial Wayland viewport */
+#endif
 #endif
 
 namespace Magnum { namespace Platform {
@@ -63,10 +66,7 @@ enum class GlfwApplication::Flag: UnsignedByte {
     TextInputActive = 1 << 1,
     VSyncEnabled = 1 << 2,
     NoTickEvent = 1 << 3,
-    Exit = 1 << 4,
-    #ifdef CORRADE_TARGET_APPLE
-    HiDpiWarningPrinted = 1 << 5
-    #endif
+    Exit = 1 << 4
 };
 
 GlfwApplication::GlfwApplication(const Arguments& arguments): GlfwApplication{arguments, Configuration{}} {}
@@ -80,6 +80,27 @@ GlfwApplication::GlfwApplication(const Arguments& arguments, const Configuration
     create(configuration, glConfiguration);
 }
 #endif
+
+namespace {
+
+/* GLFW before version 3.4 is compiled either for X11 or for Wayland, and
+   reports that in the version string. Version 3.4 adds runtime platform
+   selection and convenience queries. Emulate the newer API on older versions
+   for convenience. */
+#if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 304
+#define GLFW_PLATFORM_X11 1
+#define GLFW_PLATFORM_WAYLAND 2
+int glfwGetPlatform() {
+    const Containers::StringView platform = glfwGetVersionString();
+    if(platform.contains("X11"_s))
+        return GLFW_PLATFORM_X11;
+    if(platform.contains("Wayland"_s))
+        return GLFW_PLATFORM_WAYLAND;
+    return {};
+}
+#endif
+
+}
 
 GlfwApplication::GlfwApplication(const Arguments& arguments, NoCreateT):
     _flags{Flag::Redraw}
@@ -143,21 +164,54 @@ GlfwApplication::GlfwApplication(const Arguments& arguments, NoCreateT):
     if(args.value("log") == "verbose")
         _verboseLog = true;
     const Containers::StringView dpiScaling = args.value<Containers::StringView>("dpi-scaling");
+    #if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE)
+    const bool isWayland = glfwGetPlatform() == GLFW_PLATFORM_WAYLAND;
+    #endif
     if(dpiScaling == "default"_s)
+        /* Here we don't need to resolve to Virtual or Framebuffer on Wayland
+           as the value will get overriden by the configuration-supplied
+           value */
         _commandLineDpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Default;
-    #ifdef CORRADE_TARGET_APPLE
-    else if(dpiScaling == "framebuffer"_s)
+    #if defined(CORRADE_TARGET_APPLE) || defined(CORRADE_TARGET_UNIX)
+    else if(dpiScaling == "framebuffer"_s
+        #ifndef CORRADE_TARGET_APPLE
+        /* On Wayland framebuffer scaling is the only option. If not running
+           on Wayland, don't recognize --magnum-dpi-scaling framebuffer at
+           all. */
+        && isWayland
+        #endif
+    )
         _commandLineDpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Framebuffer;
-    #else
-    else if(dpiScaling == "virtual"_s)
+    #endif
+    #ifndef CORRADE_TARGET_APPLE
+    /* If running on a Wayland backend where framebuffer scaling is the only
+       option, these two aren't allowed there */
+    else if(dpiScaling == "virtual"_s
+        #ifdef CORRADE_TARGET_UNIX
+        && !isWayland
+        #endif
+    )
         _commandLineDpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Virtual;
-    else if(dpiScaling == "physical"_s)
+    else if(dpiScaling == "physical"_s
+        #ifdef CORRADE_TARGET_UNIX
+        && !isWayland
+        #endif
+    )
         _commandLineDpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Physical;
     #endif
-    else if(dpiScaling.containsAny(" \t\n"_s))
-        _commandLineDpiScaling = args.value<Vector2>("dpi-scaling");
-    else
-        _commandLineDpiScaling = Vector2{args.value<Float>("dpi-scaling")};
+    else {
+        if(dpiScaling.containsAny(" \t\n"_s))
+            _commandLineDpiScaling = args.value<Vector2>("dpi-scaling");
+        else
+            _commandLineDpiScaling = Vector2{args.value<Float>("dpi-scaling")};
+        /* If e.g. `virtual` is passed on macOS, it falls back to parsing it as
+           a number, resulting in zero, which then leads to nasty assertions or
+           other misbehavior. Catch that early and exit. */
+        if(Math::equal(_commandLineDpiScaling.product(), 0.0f)) {
+            Error{} << "Platform::GlfwApplication: invalid DPI scaling" << dpiScaling;
+            std::exit(2);
+        }
+    }
 }
 
 void GlfwApplication::create() {
@@ -177,18 +231,6 @@ void GlfwApplication::create(const Configuration& configuration, const GLConfigu
 #endif
 
 Vector2 GlfwApplication::dpiScaling(const Configuration& configuration) {
-    /* Print a helpful warning in case some extra steps are needed for HiDPI
-       support */
-    #ifdef CORRADE_TARGET_APPLE
-    if(!Implementation::isAppleBundleHiDpiEnabled() && !(_flags & Flag::HiDpiWarningPrinted)) {
-        Warning{} << "Platform::GlfwApplication: warning: the executable is not a HiDPI-enabled app bundle";
-        _flags |= Flag::HiDpiWarningPrinted;
-    }
-    #elif defined(CORRADE_TARGET_WINDOWS)
-    /* Handled in dpiScalingInternal(), warning printed only when using virtual
-       DPI scaling (and thus not setting the HiDpiWarningPrinted flag) */
-    #endif
-
     return dpiScalingInternal(configuration.dpiScalingPolicy(), configuration.dpiScaling());
 }
 
@@ -196,18 +238,36 @@ Vector2 GlfwApplication::dpiScalingInternal(const Implementation::GlfwDpiScaling
     std::ostream* const output = silentLog ? nullptr : Debug::output();
     std::ostream* const verbose = _verboseLog && !silentLog ? Debug::output() : nullptr;
 
+    /* Print a helpful warning in case some extra steps are needed for HiDPI
+       support. Do that even before parsing the command-line- or
+       configuration-supplied values to let the user know those might not
+       behave as expected. */
+    #ifdef CORRADE_TARGET_APPLE
+    if(!Implementation::isAppleBundleHiDpiEnabled()) {
+        Warning{output} << "Platform::GlfwApplication: warning: the executable is not a HiDPI-enabled app bundle";
+    }
+    #endif
+
     /* Use values from the configuration only if not overridden on command line
        to something non-default. In any case explicit scaling has a precedence
        before the policy. */
     #ifndef CORRADE_TARGET_APPLE
     Implementation::GlfwDpiScalingPolicy dpiScalingPolicy{};
     #endif
+    #if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE)
+    const int glfwPlatform = glfwGetPlatform();
+    #endif
     if(!_commandLineDpiScaling.isZero()) {
         Debug{verbose} << "Platform::GlfwApplication: user-defined DPI scaling" << _commandLineDpiScaling;
         return _commandLineDpiScaling;
     } else if(_commandLineDpiScalingPolicy != Implementation::GlfwDpiScalingPolicy::Default) {
         #ifndef CORRADE_TARGET_APPLE
+        /* On non-Apple Unix the constructor guaranteed this to be Framebuffer
+           if on Wayland */
         dpiScalingPolicy = _commandLineDpiScalingPolicy;
+        #ifdef CORRADE_TARGET_UNIX
+        CORRADE_INTERNAL_ASSERT(glfwPlatform != GLFW_PLATFORM_WAYLAND || dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Framebuffer);
+        #endif
         #endif
     } else if(!configurationDpiScaling.isZero()) {
         Debug{verbose} << "Platform::GlfwApplication: app-defined DPI scaling" << configurationDpiScaling;
@@ -215,10 +275,49 @@ Vector2 GlfwApplication::dpiScalingInternal(const Implementation::GlfwDpiScaling
     } else {
         #ifndef CORRADE_TARGET_APPLE
         dpiScalingPolicy = configurationDpiScalingPolicy;
+        #ifdef CORRADE_TARGET_UNIX
+        if(glfwPlatform == GLFW_PLATFORM_WAYLAND) {
+            /* By default, the policy is set to Default (heh), not Framebuffer,
+               don't warn in that case. Compared to --magnum-dpi-scaling this
+               is not a hard error as it's generally too annoing for the app
+               code to check whether X11 or Wayland is used before actually
+               creating the window */
+            if(dpiScalingPolicy != Implementation::GlfwDpiScalingPolicy::Framebuffer &&
+               dpiScalingPolicy != Implementation::GlfwDpiScalingPolicy::Default)
+            {
+                CORRADE_INTERNAL_ASSERT(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Virtual || dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Physical);
+                Warning{output} << "Platform::GlfwApplication:" << (dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Virtual ? "virtual" : "physical") << "DPI scaling not supported on this platform, falling back to framebuffer scaling";
+            }
+            dpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Framebuffer;
+        } else {
+            /* Conversely, if we're not on Wayland, warn if attempting to use
+               framebuffer scaling and fall back to virtual */
+            if(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Framebuffer) {
+                Warning{output} << "Platform::GlfwApplication: framebuffer DPI scaling not supported on this platform, falling back to virtual scaling";
+                dpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Virtual;
+            }
+            if(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Default)
+                dpiScalingPolicy = Implementation::GlfwDpiScalingPolicy::Virtual;
+        }
+        #endif
         #else
         static_cast<void>(configurationDpiScalingPolicy);
         #endif
     }
+
+    /* On Windows GLFW is advertising the application to be DPI-aware on its
+       own even without supplying an explicit manifest -- https://github.com/glfw/glfw/blob/089ea9af227fdffdf872348923e1c12682e63029/src/win32_init.c#L564-L569
+       If, for some reason, the app is still not DPI-aware, tell that to the
+       user explicitly and don't even attempt to query the value as neither
+       virtual nor physical scaling would behave as expected. This is done only
+       after parsing the command-line- and configuration-supplied values so a
+       custom value can still be supplied if desired. */
+    #if defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT)
+    if(!Implementation::isWindowsAppDpiAware()) {
+        Warning{output} << "Platform::GlfwApplication: your application is not set as DPI-aware, DPI scaling won't be used";
+        return Vector2{1.0f};
+    }
+    #endif
 
     /* There's no choice on Apple, it's all controlled by the plist file. So
        unless someone specified custom scaling via config or command-line
@@ -226,57 +325,66 @@ Vector2 GlfwApplication::dpiScalingInternal(const Implementation::GlfwDpiScaling
     #ifdef CORRADE_TARGET_APPLE
     return Vector2{1.0f};
 
-    /* Otherwise there's a choice between virtual and physical DPI scaling */
+    /* Otherwise there's a choice between virtual and physical DPI scaling, or
+       possibly only framebuffer scaling if we're on Wayland because things are
+       always made more complex than they need to be, ugh */
     #else
-    /* Try to get virtual DPI scaling first, if supported and requested */
-    if(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Virtual) {
-        /* Use Xft.dpi on X11. This could probably be dropped for GLFW 3.3+
-           as glfwGetMonitorContentScale() does the same, but I'd still need to
-           keep it for 2.2 and below, plus the same code needs to be used for
-           SDL anyway. So keeping it to reduce the chance for unexpected minor
-           differences across app implementations. */
-        #ifdef _MAGNUM_PLATFORM_USE_X11
-        const Vector2 dpiScaling{Implementation::x11DpiScaling(output)};
-        if(!dpiScaling.isZero()) {
-            Debug{verbose} << "Platform::GlfwApplication: virtual DPI scaling" << dpiScaling.x();
-            return dpiScaling;
-        }
+    #if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE)
+    if(glfwPlatform == GLFW_PLATFORM_WAYLAND) {
+        CORRADE_INTERNAL_ASSERT(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Framebuffer);
+        Debug{verbose} << "Platform::GlfwApplication: using framebuffer DPI scaling on Wayland";
+        return Vector2{1.0f};
+    }
+    #endif
 
-        /* Check for DPI awareness on non-RT Windows and then ask for content
-           scale (available since GLFW 3.3). GLFW is advertising the
-           application to be DPI-aware on its own even without supplying an
-           explicit manifest -- https://github.com/glfw/glfw/blob/089ea9af227fdffdf872348923e1c12682e63029/src/win32_init.c#L564-L569
-           If, for some reason, the app is still not DPI-aware, tell that to
-           the user explicitly and don't even attempt to query the value if the
-           app is not DPI aware. If it's desired to get the DPI value
-           unconditionally, the user should use physical DPI scaling instead. */
-        #elif defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT)
-        if(!Implementation::isWindowsAppDpiAware()) {
-            Warning{verbose} << "Platform::GlfwApplication: your application is not set as DPI-aware, DPI scaling won't be used";
-            return Vector2{1.0f};
+    /* On non-Wayland Unix and Windows try to get virtual DPI scaling first, if
+       supported and requested */
+    if(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Virtual) {
+        /* If we're on GLFW < 3.3 where we cannot use
+           glfwGetMonitorContentScale(), X11 was found at compile time and the
+           session is actually running on X11, do a manual query of Xft.dpi.
+           Checking for X11 is done with glfwGetPlatform(), not using
+           XDG_SESSION_TYPE because one can be on Wayland (with
+           XDG_SESSION_TYPE=wayland) but set
+           `glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);` to force use of
+           XWayland. */
+        #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 303 && defined(_MAGNUM_PLATFORM_USE_X11)
+        if(glfwPlatform == GLFW_PLATFORM_X11) {
+            const Vector2 dpiScaling{Implementation::x11DpiScaling(output)};
+            if(!dpiScaling.isZero()) {
+                Debug{verbose} << "Platform::GlfwApplication: virtual DPI scaling" << dpiScaling.x();
+                return dpiScaling;
+            }
         }
-        #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR >= 303
+        #endif
+
+        /* On Unix with GLFW 3.3+ we can use glfwGetMonitorContentScale() that
+           returns a correct value for both X11 and Wayland, same for non-RT
+           Windows as long as the app is DPI-aware, which was checked above.
+
+           On Unix with GLFW < 3.3, if running X11, the Xft.dpi branch above
+           was taken, and if running Wayland or Windows, the below "sorry, not
+           implemented" message is printed instead. */
+        #if (defined(CORRADE_TARGET_UNIX) || (defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT))) && GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR >= 303
         GLFWmonitor* const monitor = glfwGetPrimaryMonitor();
         Vector2 dpiScaling;
         glfwGetMonitorContentScale(monitor, &dpiScaling.x(), &dpiScaling.y());
         Debug{verbose} << "Platform::GlfwApplication: virtual DPI scaling" << dpiScaling;
         return dpiScaling;
-        #else
-        Debug{verbose} << "Platform::GlfwApplication: sorry, virtual DPI scaling only available on GLFW 3.3+, falling back to physical DPI scaling";
-        #endif
 
-        /* Otherwise ¯\_(ツ)_/¯ */
+        /* Otherwise ¯\_(ツ)_/¯. In particular, this gets printed for GLFW < 3.3
+           on Wayland or on Windows. */
         #else
-        Debug{verbose} << "Platform::GlfwApplication: sorry, virtual DPI scaling not implemented on this platform yet, falling back to physical DPI scaling";
+        Warning{output} << "Platform::GlfwApplication: sorry, virtual DPI scaling not implemented on this platform, falling back to physical DPI scaling";
         #endif
     }
 
-    /* At this point, either the virtual DPI query failed or a physical DPI
-       scaling is requested */
+    /* At this point, either the virtual DPI query failed, isn't implemented or
+       a physical DPI scaling is requested */
     CORRADE_INTERNAL_ASSERT(dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Virtual || dpiScalingPolicy == Implementation::GlfwDpiScalingPolicy::Physical);
 
-    /* Physical DPI scaling. Enable only on Linux (where it gets the usually
-       very-off value from X11) and on non-RT Windows (where it calculates it
+    /* Physical DPI scaling. Enable only on Linux + X11 (where it gets the
+       usually very-off value) and on non-RT Windows (where it calculates it
        from actual monitor dimensions). */
     #if defined(CORRADE_TARGET_UNIX) || (defined(CORRADE_TARGET_WINDOWS) && !defined(CORRADE_TARGET_WINDOWS_RT))
     GLFWmonitor* const monitor = glfwGetPrimaryMonitor();
@@ -296,7 +404,7 @@ Vector2 GlfwApplication::dpiScalingInternal(const Implementation::GlfwDpiScaling
 
     /* Not implemented otherwise */
     #else
-    Debug{verbose} << "Platform::GlfwApplication: sorry, physical DPI scaling not implemented on this platform yet";
+    Warning{output} << "Platform::GlfwApplication: sorry, physical DPI scaling not implemented on this platform, falling back to no scaling";
     return Vector2{1.0f};
     #endif
     #endif
@@ -312,6 +420,9 @@ void GlfwApplication::setWindowIcon(const ImageView2D& image) {
 
 namespace {
 
+/** @todo use some optimized RGB -> RGBA utility from Math/ColorBatch.h for
+    this once it exists, in particular one that makes use of contiguous rows
+    for optimization */
 template<class T> inline void packPixels(const Containers::StridedArrayView2D<const T>& in, const Containers::StridedArrayView2D<Color4ub>& out) {
     for(std::size_t row = 0; row != in.size()[0]; ++row)
         for(std::size_t col = 0; col != in.size()[1]; ++col)
@@ -366,9 +477,133 @@ void GlfwApplication::setWindowIcon(std::initializer_list<ImageView2D> images) {
     setWindowIcon(Containers::arrayView(images));
 }
 
+/* Returns a monitor pointer that gets subsequently used for enabling
+   fullscreen, or nullptr if fullscreen isn't meant to be enabled. Strange API.
+   For a fullscreen window the windowSizeToUse gets overwritten with actual
+   screen size. */
+GLFWmonitor* GlfwApplication::setupWindowFlags(const WindowFlags flags, Vector2i& windowSizeToUse) {
+    glfwWindowHint(GLFW_DECORATED, !(flags >= WindowFlag::Borderless));
+    glfwWindowHint(GLFW_RESIZABLE, flags >= WindowFlag::Resizable);
+    glfwWindowHint(GLFW_VISIBLE, !(flags >= WindowFlag::Hidden));
+    glfwWindowHint(GLFW_MAXIMIZED, flags >= WindowFlag::Maximized);
+    glfwWindowHint(GLFW_FLOATING, flags >= WindowFlag::AlwaysOnTop);
+
+    /* Fullscreen setup. GLFW, would it kill you to have a builtin API for
+       desktop fullscreen? I really don't feel like it's my responsibility to
+       deal with all these.*/
+    GLFWmonitor* const monitor = flags >= WindowFlag::Fullscreen ?
+        glfwGetPrimaryMonitor() : nullptr;
+    if(flags >= WindowFlag::FullscreenDesktop) {
+        const GLFWvidmode* const mode = glfwGetVideoMode(monitor);
+        /* Save the window size supplied from configuration to reuse later when
+           going back from fullscreen in clearWindowFlags() */
+        _windowPositionToRestore = {};
+        _windowSizeToRestore = windowSizeToUse;
+        windowSizeToUse = {mode->width, mode->height};
+        glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+        glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+        glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+        glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+    }
+
+    return monitor;
+}
+
+void GlfwApplication::toggleWindowFlags(
+    #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 303
+    const char* const messagePrefix,
+    #endif
+    const WindowFlags flags, const bool enabled
+) {
+    /* FullscreenDesktop is a superset of Fullscreen. Altogether, this whole
+       fullscreen thing is so needlessly complicated for no reason... GLFW,
+       could you just give me glfwSetWindowFullscreen() or something like SDL
+       has, and deal with all this nonsense internally? */
+    if(flags >= WindowFlag::Fullscreen) {
+        if(enabled) {
+            /* The way the glfwSetWindowMonitor() API is designed throws away
+               all information about previous window position or size, which
+               means we have to cache those. Do this only if the values are not
+               saved already so e.g. calling addWindowFlags(Fullscreen) twice
+               in a row doesn't cause the previous values to be overwritten
+               with the screen size. */
+            if(_windowSizeToRestore.isZero() && _windowPositionToRestore.isZero()) {
+                glfwGetWindowSize(_window, &_windowSizeToRestore.x(), &_windowSizeToRestore.y());
+                glfwGetWindowPos(_window, &_windowPositionToRestore.x(), &_windowPositionToRestore.y());
+            }
+            /* Unfortunately there isn't a way to get the screen on which an
+               existing window is (glfwGetWindowMonitor() returns null for
+               non-fullscreen windows, FFS), so toggling fullscreen may
+               actually cause the window to jump onto some other display
+               entirely. Sigh. */
+            GLFWmonitor* const monitor = glfwGetPrimaryMonitor();
+            if(flags >= WindowFlag::FullscreenDesktop) {
+                const GLFWvidmode* const mode = glfwGetVideoMode(monitor);
+                glfwSetWindowMonitor(_window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+            } else {
+                glfwSetWindowMonitor(_window, monitor, 0, 0, _windowSizeToRestore.x(), _windowSizeToRestore.y(), GLFW_DONT_CARE);
+            }
+        } else {
+            /* If disabling fullscreen, restore back to the previously cached
+               position and size. Clear the cached values so they get correctly
+               remembered above next time fullscreen is enabled. */
+            /** @todo when the window is already created as fullscreen, such as
+                with PlatformGlfwApplicationTest --fullscreen-desktop, toggling
+                it back to a regular window doesn't actually use the window
+                size saved in setupWindowFlags() but the window is maximized;
+                one has to call glfwRestoreWindow() to un-maximize it, which
+                still causes it to have a strange size, and then only a call to
+                glfwSetWindowSize() makes it the actual desired size ... WTF */
+            glfwSetWindowMonitor(_window, nullptr, _windowPositionToRestore.x(), _windowPositionToRestore.y(), _windowSizeToRestore.x(), _windowSizeToRestore.y(), GLFW_DONT_CARE);
+            _windowSizeToRestore = {};
+            _windowPositionToRestore = {};
+        }
+    }
+
+    #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR >= 303
+    if(flags >= WindowFlag::Borderless)
+        glfwSetWindowAttrib(_window, GLFW_DECORATED, !enabled);
+    if(flags >= WindowFlag::Resizable)
+        glfwSetWindowAttrib(_window, GLFW_RESIZABLE, enabled);
+    #endif
+    if(flags >= WindowFlag::Hidden)
+        enabled ? glfwHideWindow(_window) : glfwShowWindow(_window);
+    if(flags >= WindowFlag::Maximized)
+        enabled ? glfwMaximizeWindow(_window) : glfwRestoreWindow(_window);
+    if(flags >= WindowFlag::Minimized)
+        enabled ? glfwIconifyWindow(_window) : glfwRestoreWindow(_window);
+    #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR >= 303
+    if(flags >= WindowFlag::AlwaysOnTop)
+        glfwSetWindowAttrib(_window, GLFW_FLOATING, enabled);
+    #endif
+
+    #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 303
+    if(flags & (WindowFlag::Borderless|
+                WindowFlag::Resizable|
+                WindowFlag::AlwaysOnTop))
+        Warning{} << messagePrefix << "toggling WindowFlag::Borderless, Resizable or AlwaysOnTop is not supported";
+    #endif
+}
+
+void GlfwApplication::addWindowFlags(const WindowFlags flags) {
+    toggleWindowFlags(
+        #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 303
+        "Platform::GlfwApplication::addWindowFlags():",
+        #endif
+        flags, true);
+}
+
+void GlfwApplication::clearWindowFlags(const WindowFlags flags) {
+    toggleWindowFlags(
+        #if GLFW_VERSION_MAJOR*100 + GLFW_VERSION_MINOR < 303
+        "Platform::GlfwApplication::clearWindowFlags():",
+        #endif
+        flags, false);
+}
+
 bool GlfwApplication::tryCreate(const Configuration& configuration) {
     #ifdef MAGNUM_TARGET_GL
-    if(!(configuration.windowFlags() & Configuration::WindowFlag::Contextless)) {
+    if(!(configuration.flags() & Configuration::Flag::Contextless)) {
         return tryCreate(configuration, GLConfiguration{});
     }
     #endif
@@ -380,27 +615,18 @@ bool GlfwApplication::tryCreate(const Configuration& configuration) {
     _configurationDpiScalingPolicy = configuration.dpiScalingPolicy();
     _configurationDpiScaling = configuration.dpiScaling();
     _dpiScaling = dpiScalingInternal(_configurationDpiScalingPolicy, _configurationDpiScaling);
-    const Vector2i scaledWindowSize = configuration.size()*_dpiScaling;
+    /*mutable*/ Vector2i scaledWindowSize = configuration.size()*_dpiScaling;
 
-    /* Window flags */
-    GLFWmonitor* monitor = nullptr; /* Needed for setting fullscreen */
-    if (configuration.windowFlags() >= Configuration::WindowFlag::Fullscreen) {
-        monitor = glfwGetPrimaryMonitor();
-        glfwWindowHint(GLFW_AUTO_ICONIFY, configuration.windowFlags() >= Configuration::WindowFlag::AutoIconify);
-    } else {
-        const Configuration::WindowFlags& flags = configuration.windowFlags();
-        glfwWindowHint(GLFW_DECORATED, !(flags >= Configuration::WindowFlag::Borderless));
-        glfwWindowHint(GLFW_RESIZABLE, flags >= Configuration::WindowFlag::Resizable);
-        glfwWindowHint(GLFW_VISIBLE, !(flags >= Configuration::WindowFlag::Hidden));
-        glfwWindowHint(GLFW_MAXIMIZED, flags >= Configuration::WindowFlag::Maximized);
-        glfwWindowHint(GLFW_FLOATING, flags >= Configuration::WindowFlag::AlwaysOnTop);
-    }
-    glfwWindowHint(GLFW_FOCUSED, configuration.windowFlags() >= Configuration::WindowFlag::Focused);
+    /* Setup window flags, the monitor pointer is used below to enable
+       fullscreen and the window size gets updated if desktop fullscreen is
+       requested */
+    GLFWmonitor* const monitor = setupWindowFlags(configuration.windowFlags(), scaledWindowSize);
 
     /* Disable implicit GL context creation */
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    /* Create the window */
+    /* Create the window. The title is internally stored as a
+       Containers::String so it should be null-terminated always. */
     CORRADE_INTERNAL_ASSERT(configuration.title().flags() & Containers::StringViewFlag::NullTerminated);
     _window = glfwCreateWindow(scaledWindowSize.x(), scaledWindowSize.y(), configuration.title().data(), monitor, nullptr);
     if(!_window) {
@@ -411,7 +637,7 @@ bool GlfwApplication::tryCreate(const Configuration& configuration) {
 
     /* Proceed with configuring other stuff that couldn't be done with window
        hints */
-    if(configuration.windowFlags() >= Configuration::WindowFlag::Minimized)
+    if(configuration.windowFlags() >= WindowFlag::Minimized)
         glfwIconifyWindow(_window);
     #ifdef MAGNUM_BUILD_DEPRECATED
     CORRADE_IGNORE_DEPRECATED_PUSH
@@ -422,35 +648,10 @@ bool GlfwApplication::tryCreate(const Configuration& configuration) {
     return true;
 }
 
-namespace {
-
-GlfwApplication::Modifiers currentGlfwModifiers(GLFWwindow* window) {
-    static_assert(GLFW_PRESS == true && GLFW_RELEASE == false,
-        "GLFW press and release constants do not correspond to bool values");
-
-    GlfwApplication::Modifiers mods;
-    if(glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) ||
-       glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT))
-        mods |= GlfwApplication::Modifier::Shift;
-    if(glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) ||
-       glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL))
-        mods |= GlfwApplication::Modifier::Ctrl;
-    if(glfwGetKey(window, GLFW_KEY_LEFT_ALT) ||
-       glfwGetKey(window, GLFW_KEY_RIGHT_ALT))
-        mods |= GlfwApplication::Modifier::Alt;
-    if(glfwGetKey(window, GLFW_KEY_LEFT_SUPER) ||
-       glfwGetKey(window, GLFW_KEY_RIGHT_SUPER))
-        mods |= GlfwApplication::Modifier::Super;
-
-    return mods;
-}
-
-}
-
 #ifdef MAGNUM_TARGET_GL
 bool GlfwApplication::tryCreate(const Configuration& configuration, const GLConfiguration& glConfiguration) {
-    CORRADE_ASSERT(!(configuration.windowFlags() & Configuration::WindowFlag::Contextless),
-        "Platform::GlfwApplication::tryCreate(): cannot pass Configuration::WindowFlag::Contextless when creating an OpenGL context", false);
+    CORRADE_ASSERT(!(configuration.flags() & Configuration::Flag::Contextless),
+        "Platform::GlfwApplication::tryCreate(): cannot pass Configuration::Flag::Contextless when creating an OpenGL context", false);
     CORRADE_ASSERT(!_window && _context->version() == GL::Version::None,
         "Platform::GlfwApplication::tryCreate(): window with OpenGL context already created", false);
 
@@ -459,22 +660,12 @@ bool GlfwApplication::tryCreate(const Configuration& configuration, const GLConf
     _configurationDpiScalingPolicy = configuration.dpiScalingPolicy();
     _configurationDpiScaling = configuration.dpiScaling();
     _dpiScaling = dpiScalingInternal(_configurationDpiScalingPolicy, _configurationDpiScaling);
-    const Vector2i scaledWindowSize = configuration.size()*_dpiScaling;
+    /*mutable*/ Vector2i scaledWindowSize = configuration.size()*_dpiScaling;
 
-    /* Window flags */
-    GLFWmonitor* monitor = nullptr; /* Needed for setting fullscreen */
-    if (configuration.windowFlags() >= Configuration::WindowFlag::Fullscreen) {
-        monitor = glfwGetPrimaryMonitor();
-        glfwWindowHint(GLFW_AUTO_ICONIFY, configuration.windowFlags() >= Configuration::WindowFlag::AutoIconify);
-    } else {
-        const Configuration::WindowFlags& flags = configuration.windowFlags();
-        glfwWindowHint(GLFW_DECORATED, !(flags >= Configuration::WindowFlag::Borderless));
-        glfwWindowHint(GLFW_RESIZABLE, flags >= Configuration::WindowFlag::Resizable);
-        glfwWindowHint(GLFW_VISIBLE, !(flags >= Configuration::WindowFlag::Hidden));
-        glfwWindowHint(GLFW_MAXIMIZED, flags >= Configuration::WindowFlag::Maximized);
-        glfwWindowHint(GLFW_FLOATING, flags >= Configuration::WindowFlag::AlwaysOnTop);
-    }
-    glfwWindowHint(GLFW_FOCUSED, configuration.windowFlags() >= Configuration::WindowFlag::Focused);
+    /* Setup window flags, the monitor pointer is used below to enable
+       fullscreen and the window size gets updated if desktop fullscreen is
+       requested */
+    GLFWmonitor* const monitor = setupWindowFlags(configuration.windowFlags(), scaledWindowSize);
 
     /* Framebuffer setup */
     glfwWindowHint(GLFW_RED_BITS, glConfiguration.colorBufferSize().r());
@@ -547,6 +738,9 @@ bool GlfwApplication::tryCreate(const Configuration& configuration, const GLConf
        blinking in case we have to destroy it again right away. If the creation
        succeeds, make the context current so we can query GL_VENDOR below. */
     glfwWindowHint(GLFW_VISIBLE, false);
+    /* The title is internally stored as a Containers::String so it should be
+       null-terminated always */
+    CORRADE_INTERNAL_ASSERT(configuration.title().flags() & Containers::StringViewFlag::NullTerminated);
     if((_window = glfwCreateWindow(scaledWindowSize.x(), scaledWindowSize.y(), configuration.title().data(), monitor, nullptr)))
         glfwMakeContextCurrent(_window);
 
@@ -586,7 +780,8 @@ bool GlfwApplication::tryCreate(const Configuration& configuration, const GLConf
            just 2.1) and I assume on others as well. */
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, false);
 
-        CORRADE_INTERNAL_ASSERT(configuration.title().flags() & Containers::StringViewFlag::NullTerminated);
+        /* StringViewFlag::NullTerminated asserted above already, internally
+           it's stored as a Containers::String so it should be always */
         _window = glfwCreateWindow(scaledWindowSize.x(), scaledWindowSize.y(), configuration.title().data(), monitor, nullptr);
     }
     #endif
@@ -598,8 +793,6 @@ bool GlfwApplication::tryCreate(const Configuration& configuration, const GLConf
 
     /* Proceed with configuring other stuff that couldn't be done with window
        hints */
-    if(configuration.windowFlags() >= Configuration::WindowFlag::Minimized)
-        glfwIconifyWindow(_window);
     #ifdef MAGNUM_BUILD_DEPRECATED
     CORRADE_IGNORE_DEPRECATED_PUSH
     glfwSetInputMode(_window, GLFW_CURSOR, Int(configuration.cursorMode()));
@@ -613,15 +806,45 @@ bool GlfwApplication::tryCreate(const Configuration& configuration, const GLConf
     /* Make the final context current */
     glfwMakeContextCurrent(_window);
 
+    /* On Wayland GLFW has an incorrect initial viewport without scaling
+       applied. Ask for the workaround status before actually creating the
+       Magnum context so the workaround is listed in the startup log, however
+       the actual framebuffer size is known only once the window is shown,
+       so defer that to after. */
+    #if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE)
+    const bool patchViewportSize = glfwGetPlatform() == GLFW_PLATFORM_WAYLAND && !_context->isDriverWorkaroundDisabled("glfw-unscaled-initial-wayland-viewport"_s);
+    #endif
+
     /* Destroy everything when the Magnum context creation fails */
     if(!_context->tryCreate(glConfiguration)) {
         glfwDestroyWindow(_window);
         _window = nullptr;
     }
 
-    /* Show the window once we are sure that everything is okay */
-    if(!(configuration.windowFlags() & Configuration::WindowFlag::Hidden))
+    /* Show the window once we are sure that everything is okay. This
+       apparently causes a minimized window to get restored, so perform the
+       minimization only after this step, not before. */
+    if(!(configuration.windowFlags() & WindowFlag::Hidden)) {
         glfwShowWindow(_window);
+        /* Patch the Wayland viewport now that the framebuffer size is known.
+           Can't do that directly through glViewport() because that would make
+           the value cached in the state tracker outdated. Additionally have to
+           call glfwSwapBuffers() because for some reason the initial buffer is
+           the original unscaled viewport stretched over the whole window, i.e.
+           blurry.
+
+           If the window is hidden, the framebuffer size doesn't get updated by
+           GLFW initially. It only happens once the window gets shown, via a
+           regular viewport event. */
+        #if defined(CORRADE_TARGET_UNIX) && !defined(CORRADE_TARGET_APPLE)
+        if(patchViewportSize) {
+            GL::defaultFramebuffer.setViewport({{}, framebufferSize()});
+            glfwSwapBuffers(_window);
+        }
+        #endif
+    }
+    if(configuration.windowFlags() >= WindowFlag::Minimized)
+        glfwIconifyWindow(_window);
 
     /* Return true if the initialization succeeds */
     return true;
@@ -876,7 +1099,6 @@ Vector2i GlfwApplication::framebufferSize() const {
     glfwGetFramebufferSize(_window, &size.x(), &size.y());
     return size;
 }
-#endif
 
 void GlfwApplication::setSwapInterval(const Int interval) {
     glfwSwapInterval(interval);
@@ -889,6 +1111,7 @@ void GlfwApplication::setSwapInterval(const Int interval) {
         _flags |= Flag::VSyncEnabled;
     else _flags &= ~Flag::VSyncEnabled;
 }
+#endif
 
 void GlfwApplication::setMinimalLoopPeriod(const Nanoseconds time) {
     CORRADE_ASSERT(time >= 0_nsec,
@@ -1210,14 +1433,11 @@ GlfwApplication::GLConfiguration::GLConfiguration():
     addFlags(Flag::ForwardCompatible);
     #endif
 }
-
-GlfwApplication::GLConfiguration::~GLConfiguration() = default;
 #endif
 
 GlfwApplication::Configuration::Configuration():
     _title{Containers::String::nullTerminatedGlobalView("Magnum GLFW Application"_s)},
     _size{800, 600},
-    _windowFlags{WindowFlag::Focused},
     _dpiScalingPolicy{DpiScalingPolicy::Default} {}
 
 GlfwApplication::Configuration::~Configuration() = default;
@@ -1237,6 +1457,31 @@ GlfwApplication::Pointers GlfwApplication::PointerMoveEvent::pointers() {
         _pointers = currentGlfwPointers(_window);
 
     return *_pointers;
+}
+
+namespace {
+
+GlfwApplication::Modifiers currentGlfwModifiers(GLFWwindow* window) {
+    static_assert(GLFW_PRESS == true && GLFW_RELEASE == false,
+        "GLFW press and release constants do not correspond to bool values");
+
+    GlfwApplication::Modifiers mods;
+    if(glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) ||
+       glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT))
+        mods |= GlfwApplication::Modifier::Shift;
+    if(glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) ||
+       glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL))
+        mods |= GlfwApplication::Modifier::Ctrl;
+    if(glfwGetKey(window, GLFW_KEY_LEFT_ALT) ||
+       glfwGetKey(window, GLFW_KEY_RIGHT_ALT))
+        mods |= GlfwApplication::Modifier::Alt;
+    if(glfwGetKey(window, GLFW_KEY_LEFT_SUPER) ||
+       glfwGetKey(window, GLFW_KEY_RIGHT_SUPER))
+        mods |= GlfwApplication::Modifier::Super;
+
+    return mods;
+}
+
 }
 
 GlfwApplication::Modifiers GlfwApplication::PointerMoveEvent::modifiers() {

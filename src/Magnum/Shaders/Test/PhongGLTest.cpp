@@ -857,11 +857,24 @@ const struct {
 
 const struct {
     const char* name;
+    const char* expected;
+    Color3 specularColor;
     PhongGL::Flags flags;
     bool flipNormals;
+    bool flipDefaultWinding;
 } RenderDoubleSidedData[]{
-    {"normals flipped", {}, true},
-    {"double-sided rendering", PhongGL::Flag::DoubleSided, false}
+    {"normals flipped", "double-sided.tga",
+        {}, {}, true, false},
+    {"normals flipped, specular", "double-sided-specular.tga",
+        0xffffff_rgbf, {}, true, false},
+    {"double-sided rendering", "double-sided.tga",
+        {}, PhongGL::Flag::DoubleSided, false, false},
+    {"double-sided rendering, specular", "double-sided-specular.tga",
+        0xffffff_rgbf, PhongGL::Flag::DoubleSided, false, false},
+    {"clockwise default winding, normals flipped", "double-sided.tga",
+        {}, {}, true, true},
+    {"clockwise default winding, double-sided rendering", "double-sided.tga",
+        {}, PhongGL::Flag::DoubleSided, false, true},
 };
 
 #ifndef MAGNUM_TARGET_GLES2
@@ -2293,6 +2306,11 @@ void PhongGLTest::renderTeardown() {
     #ifndef MAGNUM_TARGET_GLES2
     _objectId = GL::Renderbuffer{NoCreate};
     #endif
+
+    /* Reset back to test defaults in case some test changes those, such as
+       renderDoubleSided() */
+    GL::Renderer::enable(GL::Renderer::Feature::FaceCulling);
+    GL::Renderer::setFrontFace(GL::Renderer::FrontFace::CounterClockWise);
 }
 
 template<PhongGL::Flag flag> void PhongGLTest::renderDefaults() {
@@ -4487,19 +4505,24 @@ void PhongGLTest::renderDoubleSided() {
     setTestCaseDescription(data.name);
 
     Trade::MeshData sphere = Primitives::uvSphereSolid(16, 32);
+    if(data.flipDefaultWinding)
+        MeshTools::flipFaceWindingInPlace(sphere.mutableIndices());
 
     Trade::MeshData sphereFlippedWinding = Primitives::uvSphereSolid(16, 32);
-    MeshTools::flipFaceWindingInPlace(sphereFlippedWinding.mutableIndices());
+    if(!data.flipDefaultWinding)
+        MeshTools::flipFaceWindingInPlace(sphereFlippedWinding.mutableIndices());
 
     Trade::MeshData sphereFlippedNormalsWinding = Primitives::uvSphereSolid(16, 32);
-    MeshTools::flipNormalsInPlace(
-        sphereFlippedNormalsWinding.mutableIndices(),
-        sphereFlippedNormalsWinding.mutableAttribute<Vector3>(Trade::MeshAttribute::Normal));
+    if(!data.flipDefaultWinding)
+        MeshTools::flipFaceWindingInPlace(sphereFlippedNormalsWinding.mutableIndices());
+    MeshTools::flipNormalsInPlace(sphereFlippedNormalsWinding.mutableAttribute<Vector3>(Trade::MeshAttribute::Normal));
 
     /* Double-sided sphere, renders from both sides if DoubleSided is
        enabled and face culling disabled, otherwise only one depending on the
        normal direction */
     Trade::MeshData sphereDoubleSided = Primitives::uvSphereSolid(16, 32);
+    if(data.flipDefaultWinding)
+        MeshTools::flipFaceWindingInPlace(sphereDoubleSided.mutableIndices());
     if(data.flipNormals)
         MeshTools::flipNormalsInPlace(sphereDoubleSided.mutableAttribute<Vector3>(Trade::MeshAttribute::Normal));
 
@@ -4510,7 +4533,10 @@ void PhongGLTest::renderDoubleSided() {
         .setLightPositions({{-3.0f, 3.0f, 3.0f, 0.0f}})
         .setAmbientColor(0x111111_rgbf)
         .setDiffuseColor(0xff3333_rgbf)
-        .setSpecularColor(0x00000000_rgbaf);
+        .setSpecularColor(data.specularColor);
+
+    if(data.flipDefaultWinding)
+        GL::Renderer::setFrontFace(GL::Renderer::FrontFace::ClockWise);
 
     /* Top left is a sphere from the outside, with CCW triangles, with the back
        cut off by the far plane */
@@ -4519,7 +4545,7 @@ void PhongGLTest::renderDoubleSided() {
         .setTransformationMatrix(Matrix4::translation({-1.05f, 1.05f, 0.0f}))
         .draw(MeshTools::compile(sphere));
 
-    /* Bottom left is a sphere from the inside, with CCW triangles, with the
+    /* Bottom left is a sphere from the inside, with CW triangles, with the
        front cut off by the near plane. Normals pointing outside so only top
        left should be slightly lighted. */
     shader
@@ -4537,28 +4563,40 @@ void PhongGLTest::renderDoubleSided() {
     GL::Renderer::disable(GL::Renderer::Feature::FaceCulling);
 
     /* Bottom right is a sphere from the inside, with CW triangles and face
-       culling disabled. Should render like bottom right.
+       culling disabled. Should render like top right.
         - If DoubleSided isn't enabled on the shader, the code above flipped
           normals to point inside. If DoubleSided is accidentally active
-          always, it will flip them back outside, resulting in the same result
+          always, it will flip them back outside, resulting in the same image
           as on the bottom left.
         - If DoubleSided is enabled on the shader, the normals weren't flipped
           by the code above and the shader should do that instead. If it
-          doesn't, it will again wrongly render as on the bottom left. */
+          doesn't, it will again wrongly render as on the bottom left.
+       The specular highlight location, if enabled, differs between the top
+       and bottm right cases because they're in different position relative to
+       the camera. It should however be the same with and without DoubleSided
+       in order to verify the correct normal is zsed for specular highlight as
+       well. */
     shader
         .setProjectionMatrix(Matrix4::orthographicProjection(Vector2{4.5f}, 0.0f, 1.0f))
         .setTransformationMatrix(Matrix4::translation({+1.05f, -1.05f, 0.0f}))
         .draw(MeshTools::compile(sphereDoubleSided));
 
     GL::Renderer::enable(GL::Renderer::Feature::FaceCulling);
+    if(data.flipDefaultWinding)
+        GL::Renderer::setFrontFace(GL::Renderer::FrontFace::CounterClockWise);
 
     MAGNUM_VERIFY_NO_GL_ERROR();
 
+    /* SwiftShader 4.1.0 is fine, and without the DoubleSided flag gl_FrontFace
+       isn't used so there it's fine too */
+    CORRADE_EXPECT_FAIL_IF(data.flipDefaultWinding && data.flags >= PhongGL::Flag::DoubleSided && GL::Context::current().versionString().contains("SwiftShader 4.0.0"_s),
+        "SwiftShader 4.0.0 has a bug where gl_FrontFace doesn't take a ClockWise glFontFace() setting into account");
     CORRADE_COMPARE_WITH(
         /* Dropping the alpha channel, as it's always 1.0 */
         _framebuffer.read(_framebuffer.viewport(), {PixelFormat::RGBA8Unorm}).pixels<Color4ub>().slice(&Color4ub::rgb),
-        Utility::Path::join(_testDir, "PhongTestFiles/double-sided.tga"),
-        (DebugTools::CompareImageToFile{_manager, 1.34f, 0.04f}));
+        Utility::Path::join({_testDir, "PhongTestFiles", data.expected}),
+        /* SwiftShader has one pixel really off for the specular case */
+        (DebugTools::CompareImageToFile{_manager, 130.0f, 0.06f}));
 }
 
 #ifndef MAGNUM_TARGET_GLES2
